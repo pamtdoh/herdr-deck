@@ -28,6 +28,7 @@ mod picker;
 mod server;
 mod usb;
 
+use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpStream, UdpSocket};
@@ -40,7 +41,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 use claude::Sessions;
-use herdr::Herdr;
+use herdr::{Herdr, PanelSort};
 use picker::{Change, Picker};
 use pixbar_proto::{decode, encode, Action, AgentState, FromDevice, ToDevice, BEACON_PORT, BEACON_PREFIX, DEFAULT_PORT, PROTO};
 use pixbar_render::{Agent, Effort, Model, Status};
@@ -88,6 +89,18 @@ fn num(v: &Value, key: &str) -> u64 {
     v[key].as_u64().unwrap_or(u64::MAX)
 }
 
+/// How much an agent wants attention, as herdr's "priority" panel order ranks it. Within a rank herdr puts the
+/// agent whose state changed last first.
+fn attention(status: Option<&str>) -> u8 {
+    match status {
+        Some("blocked") => 4,
+        Some("done") => 3,
+        Some("working") => 2,
+        Some("idle") => 1,
+        _ => 0,
+    }
+}
+
 /// Ultracode is recorded everywhere as plain xhigh; the only live trace is the violet `ultracode` tag that
 /// Claude Code draws into the top border of its prompt box.
 fn screen_shows_ultracode(screen: &str) -> bool {
@@ -110,6 +123,10 @@ impl Bridge {
             let pane = a["pane_id"].as_str().and_then(|p| p.rsplit('p').next()?.parse::<u64>().ok()).unwrap_or(0);
             (w.map_or(u64::MAX, |w| num(w, "number")), t.map_or(u64::MAX, |t| num(t, "number")), pane)
         });
+        // ...unless its agent panel is set to "priority": then as herdr sorts that, over the order above.
+        if self.herdr.panel_sort() == PanelSort::Priority {
+            claudes.sort_by_key(|a| (Reverse(attention(a["agent_status"].as_str())), Reverse(a["state_change_seq"].as_u64().unwrap_or(0))));
+        }
 
         let focused_pane = snap["focused_pane_id"].as_str().unwrap_or("");
         let mut shared = self.shared.lock().unwrap();
