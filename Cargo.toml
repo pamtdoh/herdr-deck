@@ -1,0 +1,33 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/pixbar-render",
+    "crates/pixbar-sim",
+    "crates/pixbar-proto",
+    "crates/pixbar-device",
+    "crates/pixbar-bridge",
+]
+# Without the simulator: it is a window on a desktop, with some eighty crates and a C compile of its own.
+# `cargo run -p pixbar-sim` still builds it.
+default-members = ["crates/pixbar-render", "crates/pixbar-proto", "crates/pixbar-device", "crates/pixbar-bridge"]
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+license = "MIT"
+rust-version = "1.87"
+readme = "README.md"
+repository = "https://github.com/pamtdoh/herdr-deck"
+# A device program and the host daemon that carries it: built from a checkout, not from crates.io.
+publish = false
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# The device binary lives in a 16 MB tmpfs and is pushed over WiFi on every start.
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true
+panic = "abort"

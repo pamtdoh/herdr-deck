@@ -1,0 +1,13 @@
+# The TC002 is ARMv7 Linux 4.9 with no usable libc of its own: build fully static against musl,
+# linked with the lld that ships with Rust so no cross gcc is needed.
+# The bridge as one static file that runs on any Linux of its architecture, whatever its libc:
+#   rustup target add x86_64-unknown-linux-musl && cargo build --release -p pixbar-bridge --target x86_64-unknown-linux-musl
+[target.x86_64-unknown-linux-musl]
+linker = "rust-lld"
+
+[target.aarch64-unknown-linux-musl]
+linker = "rust-lld"
+
+[target.armv7-unknown-linux-musleabihf]
+linker = "rust-lld"
+rustflags = ["-C", "link-self-contained=yes", "-C", "target-feature=+crt-static"]

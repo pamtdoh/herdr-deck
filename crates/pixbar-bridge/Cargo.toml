@@ -1,0 +1,19 @@
+[package]
+name = "pixbar-bridge"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+rust-version.workspace = true
+readme.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Host daemon: herdr and Claude Code on one side, the pixbar panel on the other"
+
+[dependencies]
+libc = "0.2"
+# The USB cable: pure Rust, no libusb and no system package.
+nusb = "0.2"
+serde = { workspace = true }
+serde_json = { workspace = true }
+pixbar-render = { path = "../pixbar-render" }
+pixbar-proto = { path = "../pixbar-proto" }

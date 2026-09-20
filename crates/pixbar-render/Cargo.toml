@@ -1,0 +1,16 @@
+[package]
+name = "pixbar-render"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+rust-version.workspace = true
+readme.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "The pixbar UI: agents, inputs and time in, a 52x16 frame out"
+
+[dependencies]
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

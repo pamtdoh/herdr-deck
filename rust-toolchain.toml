@@ -1,0 +1,4 @@
+# rustup reads this: the device program is an ARM build, and its standard library comes with the toolchain.
+[toolchain]
+channel = "stable"
+targets = ["armv7-unknown-linux-musleabihf"]
