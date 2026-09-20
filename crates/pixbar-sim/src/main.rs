@@ -11,7 +11,7 @@
 use std::time::Instant;
 
 use minifb::{Key, KeyRepeat, Window, WindowOptions};
-use pixbar_render::{Agent, Effort, Frame, Info, Input, Intent, Limit, Model, Power, Row, Show, Status, Style, Ui, World, H, W};
+use pixbar_render::{Agent, Effort, Frame, HostLink, Info, Input, Intent, Limit, Model, Power, Row, Show, Status, Style, Ui, World, H, W};
 
 const CELL: usize = 16;
 /// Pretend round trip to herdr + Claude Code before a change shows up in the world state.
@@ -53,7 +53,11 @@ fn demo_world() -> World {
 }
 
 fn demo_info() -> Info {
-    Info { addr: "192.0.2.7:17002".into(), ssid: "homenet".into(), hosts: vec!["DESKTOP USB".into()] }
+    Info {
+        addr: "192.0.2.7:17002".into(),
+        ssid: "homenet".into(),
+        hosts: vec![HostLink { name: "DESKTOP".into(), wired: true }, HostLink { name: "LAPTOP".into(), wired: false }],
+    }
 }
 
 /// Applies intents after a delay, the way the real bridge would confirm them.

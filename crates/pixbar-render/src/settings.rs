@@ -139,6 +139,36 @@ pub const LINGER_CHOICES_S: [u8; 5] = [2, 3, 5, 10, 20];
 /// The slowest still sits well inside the device's 10 s host timeout: the refresh doubles as the keepalive.
 pub const REFRESH_CHOICES_MS: [u16; 5] = [250, 500, 1000, 2000, 5000];
 
+/// Which host's agents the panel shows while several are connected: empty means all of them, which is the
+/// default and what the panel did before there was anything to pick. The name is kept as bytes rather than a
+/// `String` so that `Settings` stays `Copy` like every other setting; a longer name is remembered, and
+/// matched, by as much of it as fits.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct HostPick([u8; HostPick::MAX]);
+
+impl HostPick {
+    /// Longer than the names the HOSTS row can show anyway.
+    pub const MAX: usize = 31;
+
+    pub fn new(name: &str) -> HostPick {
+        let mut bytes = [0u8; HostPick::MAX];
+        // A cut has to land on a character boundary, so that what is kept is still a str.
+        let end = name.char_indices().map(|(i, c)| i + c.len_utf8()).take_while(|&e| e <= HostPick::MAX).last().unwrap_or(0);
+        bytes[..end].copy_from_slice(&name.as_bytes()[..end]);
+        HostPick(bytes)
+    }
+
+    /// Nothing picked: every connected host's agents are shown, one after another.
+    pub fn is_all(&self) -> bool {
+        self.0[0] == 0
+    }
+
+    pub fn as_str(&self) -> &str {
+        let end = self.0.iter().position(|&b| b == 0).unwrap_or(HostPick::MAX);
+        std::str::from_utf8(&self.0[..end]).unwrap_or("")
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Settings {
     /// Percent, 10..=100.
@@ -151,6 +181,8 @@ pub struct Settings {
     pub linger_s: u8,
     /// How often hosts re-read what herdr has no event for (model, effort, context). The device only passes it on.
     pub refresh_ms: u16,
+    /// Whose agents to show, when more than one machine is connected.
+    pub host: HostPick,
 }
 
 impl Default for Settings {
@@ -162,6 +194,7 @@ impl Default for Settings {
             name: NameOf::Both,
             linger_s: 10,
             refresh_ms: 1000,
+            host: HostPick::default(),
         }
     }
 }
@@ -180,7 +213,7 @@ impl Settings {
         let style = |s: Style| Style::ALL.iter().find(|x| x.0 == s).map_or("", |x| x.1);
         let name = NameOf::ALL.iter().find(|n| n.0 == self.name).map_or("", |n| n.1);
         format!(
-            "brightness={}\nblocks={}\nblocks_gap={}\nrow1={}\nrow1_style={}\nrow2={}\nrow2_style={}\nname={name}\nlinger_s={}\nrefresh_ms={}\n",
+            "brightness={}\nblocks={}\nblocks_gap={}\nrow1={}\nrow1_style={}\nrow2={}\nrow2_style={}\nname={name}\nlinger_s={}\nrefresh_ms={}\nhost={}\n",
             self.brightness,
             self.blocks.size,
             self.blocks.gap as u8,
@@ -190,6 +223,7 @@ impl Settings {
             style(self.rows[1].style),
             self.linger_s,
             self.refresh_ms,
+            self.host.as_str(),
         )
     }
 
@@ -213,6 +247,7 @@ impl Settings {
                 "refresh_ms" => {
                     s.refresh_ms = v.parse().ok().filter(|v| REFRESH_CHOICES_MS.contains(v)).unwrap_or(s.refresh_ms)
                 }
+                "host" => s.host = HostPick::new(v),
                 _ => {}
             }
         }

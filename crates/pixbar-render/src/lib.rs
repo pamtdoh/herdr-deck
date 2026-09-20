@@ -9,8 +9,8 @@ pub mod ui;
 
 pub use frame::{Frame, Rgb, H, W};
 pub use state::{Agent, Effort, Limit, Model, Power, Status, World};
-pub use settings::{Blocks, NameOf, Row, Settings, Show, Style};
-pub use ui::{render_notice, DeviceAction, Info, Input, Intent, Ui};
+pub use settings::{Blocks, HostPick, NameOf, Row, Settings, Show, Style};
+pub use ui::{render_notice, DeviceAction, HostLink, Info, Input, Intent, Ui};
 
 #[cfg(test)]
 mod tests {
@@ -345,6 +345,39 @@ mod tests {
     }
 
     #[test]
+    fn the_hosts_page_picks_whose_agents_the_panel_shows() {
+        let (w, mut ui) = (world(), Ui::new());
+        ui.info.hosts =
+            vec![HostLink { name: "DESKTOP".into(), wired: true }, HostLink { name: "LAPTOP".into(), wired: false }];
+        assert!(ui.settings.host.is_all(), "every host's agents, until one is picked");
+
+        ui.input(&w, Input::KnobLong, 0);
+        for t in 1..=4 {
+            ui.input(&w, Input::KnobCcw, t * 10); // backwards to HOSTS, past the two actions and DEVICE
+        }
+        ui.input(&w, Input::Right, 100);
+        assert_eq!(ui.settings.host.as_str(), "DESKTOP");
+        ui.input(&w, Input::Right, 200);
+        assert_eq!(ui.settings.host.as_str(), "LAPTOP");
+        ui.input(&w, Input::Right, 300);
+        assert!(ui.settings.host.is_all(), "past the last host it comes round to ALL");
+        ui.input(&w, Input::Left, 400);
+        assert_eq!(ui.settings.host.as_str(), "LAPTOP", "and the other way round");
+
+        // A machine that is off keeps its place while it is the pick, so the panel stays its own.
+        ui.info.hosts.pop();
+        assert_eq!(ui.settings.host.as_str(), "LAPTOP", "gone from the link, still the pick");
+        ui.input(&w, Input::Right, 500);
+        assert!(ui.settings.host.is_all(), "stepping off it lands on ALL");
+        ui.input(&w, Input::Left, 600);
+        assert_eq!(ui.settings.host.as_str(), "DESKTOP", "only what is connected is left in the ring");
+
+        ui.input(&w, Input::KnobPush, 700);
+        let handed = ui.take_settings_change();
+        assert_eq!(handed.map(|s| s.host), Some(HostPick::new("DESKTOP")), "handed over when the screen closes");
+    }
+
+    #[test]
     fn settings_survive_the_config_file_and_bad_values_fall_back() {
         let s = Settings {
             brightness: 40,
@@ -353,8 +386,12 @@ mod tests {
             name: NameOf::Dir,
             linger_s: 20,
             refresh_ms: 250,
+            host: HostPick::new("DESKTOP"),
         };
         assert_eq!(Settings::from_config(&s.to_config()), s);
+        // No host picked is the default, and writes an empty value that reads back the same way.
+        let all = Settings { host: HostPick::default(), ..s };
+        assert!(all.host.is_all() && Settings::from_config(&all.to_config()) == all);
         assert_eq!(Settings::from_config("brightness=250\nblocks=9\nrow1=clock\nrow2=name_pct\nlinger_s=7\nlayout=name\n"), Settings {
             brightness: 100,
             ..Settings::default()

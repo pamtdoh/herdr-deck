@@ -6,7 +6,8 @@
 use crate::font::{BIG, SMALL};
 use crate::frame::{Frame, Rect, Rgb, H, W};
 use crate::settings::{
-    step, Blocks, NameOf, Row, Settings, Show, Style, BRIGHTNESS_MIN, BRIGHTNESS_STEP, LINGER_CHOICES_S, REFRESH_CHOICES_MS,
+    step, Blocks, HostPick, NameOf, Row, Settings, Show, Style, BRIGHTNESS_MIN, BRIGHTNESS_STEP, LINGER_CHOICES_S,
+    REFRESH_CHOICES_MS,
 };
 use crate::state::{dollars_short, tokens_short, Agent, Effort, Model, Power, Status, World};
 
@@ -142,6 +143,21 @@ pub enum Intent {
     SetModel { agent: usize, model: Model },
 }
 
+/// A connected host, for the HOSTS page: what it calls itself, and how it got here.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct HostLink {
+    pub name: String,
+    /// Came in over the USB cable rather than the network.
+    pub wired: bool,
+}
+
+impl HostLink {
+    /// How the page lists it: `DESKTOP USB`, `LAPTOP WIFI`.
+    pub fn label(&self) -> String {
+        format!("{} {}", self.name, if self.wired { "USB" } else { "WIFI" })
+    }
+}
+
 /// Facts about the device for the settings' info page; the renderer cannot find them out itself.
 #[derive(Clone, Default, Debug)]
 pub struct Info {
@@ -149,8 +165,8 @@ pub struct Info {
     pub addr: String,
     /// The network the panel is set up to join; empty when none is.
     pub ssid: String,
-    /// Connected hosts, each with how it got here: `DESKTOP USB`, `LAPTOP WIFI`.
-    pub hosts: Vec<String>,
+    /// Connected hosts, in the order they came in.
+    pub hosts: Vec<HostLink>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -163,7 +179,7 @@ enum Item {
     Name,
     Linger,
     Refresh,
-    /// Read-only: which hosts are connected and how.
+    /// Which hosts are connected, and whose agents to show when there is more than one.
     Hosts,
     /// Read-only facts about the panel itself; left / right step through them.
     Device,
@@ -376,7 +392,16 @@ impl Ui {
             Item::Name => s.name = step(&NameOf::ALL.map(|n| n.0), s.name, dir, true),
             Item::Linger => s.linger_s = step(&LINGER_CHOICES_S, s.linger_s, dir, false),
             Item::Refresh => s.refresh_ms = step(&REFRESH_CHOICES_MS, s.refresh_ms, dir, false),
-            Item::Hosts => {}
+            // Every connected host, and ALL for the lot of them together.
+            Item::Hosts => {
+                let mut choices = vec![HostPick::default()];
+                choices.extend(self.info.hosts.iter().map(|h| HostPick::new(&h.name)));
+                // A pick whose host is not connected right now keeps its place, so a stray press cannot lose it.
+                if !s.host.is_all() && !choices.contains(&s.host) {
+                    choices.push(s.host);
+                }
+                s.host = step(&choices, s.host, dir, true);
+            }
             // Turning the device off takes two deliberate presses; a finger resting on the button is one.
             Item::Action(_) if held => return,
             Item::Action(action) => {
@@ -951,10 +976,19 @@ impl Ui {
                 }
                 None => drop(line2(f, "PUSH RIGHT")),
             },
-            // The link: who is connected, and whether by cable or network.
+            // The link: who is connected, whether by cable or network, and whose agents the panel shows.
             Item::Hosts => {
                 big_right(f, &self.info.hosts.len().to_string());
-                let line = if self.info.hosts.is_empty() { "NONE".to_string() } else { self.info.hosts.join(" · ") };
+                let labels = || self.info.hosts.iter().map(HostLink::label).collect::<Vec<_>>().join(" · ");
+                let line = match self.settings.host.as_str() {
+                    "" if self.info.hosts.is_empty() => "NONE".to_string(),
+                    "" => format!("ALL · {}", labels()),
+                    pick => match self.info.hosts.iter().find(|h| h.name == pick) {
+                        Some(host) => format!("ONLY {}", host.label()),
+                        // Picked on another day, or the machine is off: it still holds the panel to itself.
+                        None => format!("ONLY {pick} · NOT HERE"),
+                    },
+                };
                 draw_marquee(f, &line, MAIN.x0, LINE2_Y + dy, MAIN_W, WHITE, since);
             }
             // The panel itself. Its address is what `pixbar-bridge --device` takes, whoever is connected right now.

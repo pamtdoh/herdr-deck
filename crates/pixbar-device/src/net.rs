@@ -1,11 +1,12 @@
-//! Host connections. Every host pushes its own agent list; the panel shows them all, one after another.
+//! Host connections. Every host pushes its own agent list; the panel shows them all, one after another,
+//! or just the one picked on the HOSTS settings page.
 
 use std::io::{self, Read, Write};
 use std::net::{TcpListener, TcpStream, UdpSocket};
 use std::time::{Duration, Instant};
 
 use pixbar_proto::{decode_to_device, encode, Action, AgentState, FromDevice, LineBuffer, ToDevice, BEACON_PORT, BEACON_PREFIX, PROTO};
-use pixbar_render::World;
+use pixbar_render::{HostLink, HostPick, World};
 
 /// Hosts resend their state every couple of seconds; silence this long means the link is dead.
 const HOST_TIMEOUT: Duration = Duration::from_secs(10);
@@ -67,8 +68,8 @@ impl Hosts {
         }
     }
 
-    pub fn names(&self) -> Vec<String> {
-        self.hosts.iter().map(|h| format!("{} {}", h.name, if h.wired { "USB" } else { "WIFI" })).collect()
+    pub fn links(&self) -> Vec<HostLink> {
+        self.hosts.iter().map(|h| HostLink { name: h.name.clone(), wired: h.wired }).collect()
     }
 
     pub fn connected(&self) -> usize {
@@ -162,12 +163,16 @@ impl Hosts {
         changed
     }
 
-    /// All hosts' agents in connection order, and for each list position who owns it.
-    pub fn world(&self) -> (World, Vec<(usize, String)>) {
+    /// The agents of every host in connection order -- or of the one host `pick` names, when it names one --
+    /// and for each list position who owns it.
+    pub fn world(&self, pick: HostPick) -> (World, Vec<(usize, String)>) {
         let mut world = World::default();
         let mut owners = Vec::new();
         let mut best = 0;
         for (h, host) in self.hosts.iter().enumerate() {
+            if !pick.is_all() && host.name != pick.as_str() {
+                continue;
+            }
             for a in &host.agents {
                 if host.focused.as_deref() == Some(a.id.as_str()) && host.focus_stamp >= best {
                     best = host.focus_stamp;

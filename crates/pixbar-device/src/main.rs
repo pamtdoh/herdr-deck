@@ -176,7 +176,9 @@ fn main() {
     let mut addr_checked = Instant::now();
     ui.info = Info { addr: local_addr(args.port), ssid: wifi_ssid(), hosts: Vec::new() };
     eprintln!("pixbar-device up: {}, brightness {}%", ui.info.addr, ui.settings.brightness);
-    let (mut world, mut owners) = if args.demo { (demo_world(), Vec::new()) } else { hosts.world() };
+    // Whose agents are on the strip: recomputed when a host comes or goes, and when the HOSTS page moves.
+    let mut picked = ui.settings.host;
+    let (mut world, mut owners) = if args.demo { (demo_world(), Vec::new()) } else { hosts.world(picked) };
     let start = Instant::now();
     let mut next = start;
     let (mut frames, mut late) = (0u64, 0u64);
@@ -185,10 +187,12 @@ fn main() {
     while !STOP.load(Ordering::SeqCst) && args.seconds.is_none_or(|s| start.elapsed() < Duration::from_secs(s)) {
         let now = start.elapsed().as_millis() as u64;
 
-        if hosts.poll() {
-            ui.info.hosts = hosts.names();
+        // poll() first, always: it is what accepts, reads and expires the connections.
+        if hosts.poll() | (picked != ui.settings.host) {
+            picked = ui.settings.host;
+            ui.info.hosts = hosts.links();
             if !args.demo {
-                (world, owners) = hosts.world();
+                (world, owners) = hosts.world(picked);
             }
         }
         if addr_checked.elapsed() >= Duration::from_secs(5) {
@@ -248,9 +252,13 @@ fn main() {
             }
         }
 
-        if !args.demo && hosts.connected() == 0 && !ui.wants_screen(now) {
+        // A picked host that is not connected leaves an empty strip; say so, rather than show nothing and
+        // let it look broken. The settings screen still wins, so HOSTS is always there to pick again.
+        let away = !picked.is_all() && !ui.info.hosts.iter().any(|h| h.name == picked.as_str());
+        if !args.demo && !ui.wants_screen(now) && (hosts.connected() == 0 || away) {
             let addr = if ui.info.addr.is_empty() { "NO WIFI - USE USB" } else { &ui.info.addr };
-            render_notice(&mut frame, "NO HOST", addr, now);
+            let line2 = if away { format!("{} NOT HERE", picked.as_str()) } else { addr.to_string() };
+            render_notice(&mut frame, "NO HOST", &line2, now);
         } else {
             ui.render(&world, now, &mut frame);
         }

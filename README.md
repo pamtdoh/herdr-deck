@@ -102,7 +102,7 @@ port 5555 asks for no key), so none of this needs adb installed:
   different builds would otherwise push over each other. `deploy` updates it.
 
 Several hosts may connect at once (Linux box and Mac); the panel lists all their agents and sends each request to
-the host that owns the agent.
+the host that owns the agent. The HOSTS settings page picks whose agents it shows: all of them, or one machine's.
 
 On another machine or network (macOS: rustup and the ARM target are all it needs; untested there):
 
@@ -154,7 +154,7 @@ reachable without a host, so the HOSTS page can tell you the address to connect 
 | NAME | what an agent is called: space, tab, both, working directory, Claude Code's session title, or the name given with `/rename` (SESS; a session never named goes by its space) |
 | LINGER | how long the name stays after a knob turn: 2–20 s |
 | REFRESH | how often hosts re-read model, effort and context: 0.25–5 s. herdr events (status, focus) always arrive at once |
-| HOSTS | read-only: connected hosts and how each got there (`DESKTOP USB`, `LAPTOP WIFI`) |
+| HOSTS | Connected hosts and how each got there (`DESKTOP USB`, `LAPTOP WIFI`). Left / right pick whose agents the panel shows: `ALL`, or one of them. The pick is kept by the host's name, so it holds when that machine connects again, by cable or WiFi; `NOT HERE` says the picked one is away, and its place is held until you step off it. While it is away the resting screen says so too, rather than leave an empty strip |
 | DEVICE | read-only, left / right step through: battery (charge, and the cell voltage or "on USB"), the WiFi network it is set up for, its `ip:port`, version |
 | TURN OFF | right, then right again within 4 s: powers the device off through its MCU |
 | STOCK FW | the same two presses: stops this program and starts Ulanzi's firmware again (`pixbar-bridge deploy`, or switching the panel off and on, brings this one back) |
@@ -196,7 +196,7 @@ read `--`. An effort stop a session turns out not to have (ultracode, without wo
 
 - `pixbar-bridge stock [IP|usb]`, or STOCK FW in the panel's settings: Ulanzi's firmware now, and it stays until
   `deploy` or the next power-up. Switching the panel off and on always ends in Ulanzi's firmware for a moment:
-  nothing of this project is on its flash except its settings (`/data/pixbar.conf`, 128 bytes).
+  nothing of this project is on its flash except its settings (`/data/pixbar.conf`, about 140 bytes).
 - `pixbar-bridge uninstall`: removes the service, takes its block out of your status line script, and deletes
   `~/.local/bin/pixbar-bridge`, `~/.config/pixbar` and `~/.cache/pixbar`.
 - If the panel ever does not come up at all, Ulanzi's recovery is to hold its reset button while switching it on.
