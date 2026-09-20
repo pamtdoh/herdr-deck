@@ -63,6 +63,9 @@ const CARD_PAD: i32 = 2;
 const DIM_STYLE_LEVEL: f32 = 0.4;
 /// Touching blocks: every other one this much darker, or neighbours with the same status read as one bar.
 const TIGHT_SHADE: f32 = 0.7;
+/// One breath of a block in the strip.
+const BLOCKED_BREATH_MS: u64 = 900;
+const DONE_BREATH_MS: u64 = 1800;
 
 /// After a knob push jumped to an agent: at least this long, and long enough to read a scrolling name once.
 /// After a turn the name stays for `Settings::linger_s`, or until the knob is pushed.
@@ -1187,16 +1190,21 @@ fn marquee_pass_ms(s: &str, avail: i32) -> u64 {
     }
 }
 
-/// Strip brightness. The focused block is the brightest thing in the strip; agents with nothing going on
-/// recede; a blocked one keeps breathing (the only motion in the strip, so motion always means "act") but
-/// peaks under the focused level.
+/// Strip brightness. The focused block is the brightest thing in the strip; the rest sit at one low level and
+/// tell themselves apart by colour. Motion always means "come here": a blocked agent breathes, and so does one
+/// that is done and not yet looked at, at half the pace (it waits, it is not stuck). Unfocused they breathe from
+/// the resting level up to where the focused breath begins, so the focused block is never outshone.
 fn block_level(status: Status, focused: bool, now: u64) -> f32 {
-    match (status, focused) {
-        (Status::Blocked, true) => 0.8 + 0.2 * phase(now, 900),
-        (Status::Blocked, false) => 0.25 + 0.4 * phase(now, 900),
-        (_, true) => 1.0,
-        (Status::Working | Status::Done, false) => 0.4,
-        (Status::Idle | Status::Unknown, false) => 0.18,
+    let breath = match status {
+        Status::Blocked => Some(phase(now, BLOCKED_BREATH_MS)),
+        Status::Done => Some(phase(now, DONE_BREATH_MS)),
+        _ => None,
+    };
+    match (breath, focused) {
+        (Some(breath), true) => 0.75 + 0.25 * breath,
+        (Some(breath), false) => 0.25 + 0.5 * breath,
+        (None, true) => 1.0,
+        (None, false) => 0.25,
     }
 }
 

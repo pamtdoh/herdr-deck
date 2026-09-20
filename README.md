@@ -138,8 +138,10 @@ On another machine or network (macOS: rustup and the ARM target are all it needs
 | Left / right | Effort down / up: LOW · MED · HIGH · XHIGH · MAX · ULTRA (ultracode). Sent 0.7 s after the last press. Held down, a button repeats like a key (after 0.4 s, then every 0.15 s), here and in the settings; a repeat never counts as the confirming press of TURN OFF / STOCK FW |
 | Middle | The next model: Opus and Fable unless `~/.config/pixbar/models` says otherwise (see Models below). Shows its name with a `?` and the context that would be re-read uncached; press again within 4 s to send, leave it or press anything else to drop it. A session that has not replied yet since it started, was cleared or was compacted switches on one press |
 
-The left strip has one block per agent, coloured by status. Focus is brightness: the focused block is at full
-brightness, working / done agents at 40 %, idle ones at 18 %, and a blocked one breathes below the focused level.
+The left strip has one block per agent, coloured by status, in the order of herdr's agent panel (grouped by space,
+or by priority: its toggle is followed). Focus is brightness: the focused block is at full brightness, the
+others at 25 %. What breathes wants you: a blocked agent, and at half that pace one that is done and has not been
+looked at yet, between 25 and 75 % (75 to 100 % with the focus).
 
 Settings: the knob turns the pages, left / right change the value (as they move the effort rail), knob push closes.
 Rows, styles and the name are previewed live with the focused agent's data. Kept on the device in `/data/pixbar.conf`;

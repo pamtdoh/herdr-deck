@@ -278,7 +278,7 @@ mod tests {
     }
 
     #[test]
-    fn focus_is_the_brightest_block_and_idle_agents_recede() {
+    fn focus_is_the_brightest_block_and_the_rest_share_one_level() {
         let (mut w, ui) = (world(), Ui::new());
         w.agents[1].status = Status::Working;
         w.agents.push(Agent { status: Status::Idle, ..w.agents[0].clone() });
@@ -287,8 +287,36 @@ mod tests {
         let lum = |c: Rgb| c.0 as u32 + c.1 as u32 + c.2 as u32;
         let (focused, working, idle) = (f.get(2, 1), f.get(2, 5), f.get(2, 9));
         assert_eq!(focused, crate::ui::palette::WORKING);
-        assert!(lum(focused) > 2 * lum(working) && lum(working) > lum(idle) && idle != Rgb::OFF);
+        assert!(lum(focused) > 2 * lum(working));
+        assert_eq!((working, idle), (crate::ui::palette::WORKING.scale(0.25), crate::ui::palette::IDLE.scale(0.25)), "told apart by colour alone");
         assert!((0..16).all(|y| f.get(0, y) == Rgb::OFF && f.get(8, y) == Rgb::OFF), "no cursor bar");
+    }
+
+    #[test]
+    fn a_done_agent_breathes_under_the_focused_level_and_the_dimmest_block_stays_lit() {
+        let (mut w, mut ui) = (world(), Ui::new());
+        w.agents[1].status = Status::Done;
+        w.agents.push(Agent { status: Status::Unknown, ..w.agents[0].clone() });
+        let lum = |c: Rgb| c.0 as u32 + c.1 as u32 + c.2 as u32;
+        let at = |ui: &Ui, w: &World, now: u64, y: i32| {
+            let mut f = Frame::new();
+            ui.render(w, now, &mut f);
+            f.get(2, y)
+        };
+        let (peak, trough) = (lum(at(&ui, &w, 1800, 5)), lum(at(&ui, &w, 2700, 5)));
+        assert!(peak > 2 * trough && trough > 0, "breathing: {peak} / {trough}");
+        assert!(lum(at(&ui, &w, 1800, 1)) > peak, "and under the focused block at its peak");
+        w.focused = 1;
+        assert!(lum(at(&ui, &w, 2700, 5)) >= peak, "with the focus its breath begins where the other one ends");
+
+        // The panel multiplies by BRIGHT before anything else: a channel under 100 / BRIGHTNESS_MIN is then off.
+        ui.settings.blocks = Blocks { size: 3, gap: false };
+        w.focused = 0;
+        let mut f = Frame::new();
+        ui.render(&w, 0, &mut f);
+        let lit: Vec<Rgb> = (0..9).flat_map(|x| (0..16).map(move |y| (x, y))).map(|(x, y)| f.get(x, y)).filter(|c| *c != Rgb::OFF).collect();
+        let floor = 100 / settings::BRIGHTNESS_MIN;
+        assert!(lit.iter().all(|c| c.0.max(c.1).max(c.2) >= floor), "every block survives the lowest BRIGHT setting");
     }
 
     #[test]
