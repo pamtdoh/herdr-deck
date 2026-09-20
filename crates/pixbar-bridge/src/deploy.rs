@@ -59,7 +59,10 @@ impl Panel {
                 // Only one program can hold the cable, and a bridge that is connected over it does.
                 Err(e) if e.kind() == io::ErrorKind::ResourceBusy && crate::a_run_is_active() => Err(io::Error::new(
                     io::ErrorKind::ResourceBusy,
-                    "a running pixbar-bridge (the service?) holds the cable. Stop it first (`systemctl --user stop pixbar-bridge`), or reach the panel by its network address",
+                    format!(
+                        "a running pixbar-bridge (the service?) holds the cable. Stop it first ({}), or reach the panel by its network address",
+                        crate::install::stop_service_hint()
+                    ),
                 )),
                 other => other.map(Panel::Ours),
             },

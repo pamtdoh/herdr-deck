@@ -10,6 +10,7 @@
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 use serde_json::Value;
 
@@ -85,6 +86,18 @@ fn launch_agent_file() -> io::Result<PathBuf> {
     Ok(home()?.join("Library/LaunchAgents").join(format!("{AGENT}.plist")))
 }
 
+/// How to stop the installed service, for a message that asks the reader to. On macOS the agent stays out
+/// until it is bootstrapped again, so the way back belongs in the same breath.
+pub fn stop_service_hint() -> String {
+    if cfg!(target_os = "macos") {
+        // SAFETY: getuid has no failure mode.
+        let uid = unsafe { libc::getuid() };
+        format!("`launchctl bootout gui/{uid}/{AGENT}`, and `launchctl bootstrap gui/{uid} ~/Library/LaunchAgents/{AGENT}.plist` to start it again")
+    } else {
+        format!("`systemctl --user stop {UNIT}`")
+    }
+}
+
 /// A herdr socket worth pinning in the service: the one this shell is in, when it is not the one the bridge
 /// would find by itself (a named herdr session).
 fn socket_to_pin(default: &Path) -> Option<PathBuf> {
@@ -118,7 +131,18 @@ fn install_service(bin: &Path, default_socket: &Path) -> io::Result<()> {
         // SAFETY: getuid has no failure mode.
         let domain = format!("gui/{}", unsafe { libc::getuid() });
         let _ = ran("launchctl", &["bootout", &format!("{domain}/{AGENT}")]);
-        ran("launchctl", &["bootstrap", &domain, &file.to_string_lossy()])?;
+        // `bootout` returns before the old job has finished going away, and a `bootstrap` that overtakes it fails
+        // with "Bootstrap failed: 5: Input/output error" -- leaving no service at all. Let the teardown catch up.
+        let bootstrap = || ran("launchctl", &["bootstrap", &domain, &file.to_string_lossy()]);
+        let mut started = bootstrap();
+        for _ in 0..20 {
+            if started.is_ok() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+            started = bootstrap();
+        }
+        started?;
         println!("service      {} (log: {})", file.display(), log.display());
     } else {
         let quoted = |p: &Path| format!("\"{}\"", p.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\""));
