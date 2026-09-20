@@ -75,7 +75,7 @@ pub fn forget_old() {
 pub struct Sessions {
     /// session -> (its transcript's mtime and length, the context its last compaction left)
     compacted: HashMap<String, (SystemTime, u64, Option<u32>)>,
-    /// The models this machine's sessions have been on, most recently used first, and when that was looked up.
+    /// The models the button steps through, and when that was last read from the config file.
     models: Option<(SystemTime, Vec<Model>)>,
     /// The usage windows belong to the account, and an idle session's idea of them goes stale: the newest
     /// report of any session counts for all. Each window on its own: a report that carries only one of them
@@ -100,21 +100,15 @@ impl Sessions {
         Some(info)
     }
 
-    /// What the panel's model button leads to from `now`: the next of the models in use here, round and round.
-    /// Which models those are is `~/.config/pixbar/models` if there is one (a name per line, as Claude Code's
-    /// picker calls them: `Opus`, `Sonnet`), else the models that the sessions on this machine have been on in
-    /// the last 30 days. With one model in use there is nothing to switch to, and the button says so.
+    /// What the panel's model button leads to from `now`: the next of the models it steps through, round and
+    /// round. Which models those are is `~/.config/pixbar/models` if there is one (a name per line, as Claude
+    /// Code's picker calls them: `Opus`, `Sonnet`), else `DEFAULT_MODELS`.
     pub fn next_model(&mut self, now: Model) -> Option<Model> {
         const FRESH: Duration = Duration::from_secs(10);
         if self.models.as_ref().is_none_or(|(at, _)| at.elapsed().is_ok_and(|age| age > FRESH)) {
-            self.models = Some((SystemTime::now(), chosen_models().unwrap_or_else(models_in_use)));
+            self.models = Some((SystemTime::now(), chosen_models().unwrap_or_else(default_models)));
         }
-        let models = &self.models.as_ref()?.1;
-        let next = match models.iter().position(|&m| m == now) {
-            Some(i) => models[(i + 1) % models.len()],
-            None => *models.first()?,
-        };
-        (next != now).then_some(next)
+        next_in(&self.models.as_ref()?.1, now)
     }
 
     fn heard(&mut self, at: SystemTime, windows: [Option<Window>; 2]) {
@@ -150,24 +144,30 @@ impl Sessions {
     }
 }
 
+/// Where `~/.config/pixbar/models` says nothing, these are what the middle button steps between. Deliberately
+/// a fixed pair rather than a look at what this machine has been on: that told a freshly set up machine it had
+/// only ever used one model, which left the button with nowhere to go and no way to tell why.
+const DEFAULT_MODELS: [&str; 2] = ["Opus", "Fable"];
+
 fn chosen_models() -> Option<Vec<Model>> {
     let text = std::fs::read_to_string(crate::install::config_dir()?.join("models")).ok()?;
     let models: Vec<Model> = text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).map(model_named).collect();
     (!models.is_empty()).then_some(models)
 }
 
-fn models_in_use() -> Vec<Model> {
-    let mut seen: Vec<(SystemTime, Model)> = Vec::new();
-    for entry in dir().and_then(|d| std::fs::read_dir(d).ok()).into_iter().flatten().flatten() {
-        let (Ok(at), Ok(text)) = (entry.metadata().and_then(|m| m.modified()), std::fs::read_to_string(entry.path())) else { continue };
-        let Some(model) = serde_json::from_str::<Value>(&text).ok().and_then(|v| model_of(&v)) else { continue };
-        match seen.iter_mut().find(|(_, m)| *m == model) {
-            Some(known) => known.0 = known.0.max(at),
-            None => seen.push((at, model)),
-        }
-    }
-    seen.sort_by_key(|&(at, _)| std::cmp::Reverse(at));
-    seen.into_iter().map(|(_, m)| m).collect()
+fn default_models() -> Vec<Model> {
+    DEFAULT_MODELS.iter().copied().map(Model::new).collect()
+}
+
+/// The next model after `now`, round and round; `None` where that would not move, so the button knocks
+/// instead of sending a change to the model the session is already on.
+fn next_in(models: &[Model], now: Model) -> Option<Model> {
+    let next = match models.iter().position(|&m| m == now) {
+        Some(i) => models[(i + 1) % models.len()],
+        // On something else entirely (Sonnet, a model of the day): the first of ours is where the button goes.
+        None => *models.first()?,
+    };
+    (next != now).then_some(next)
 }
 
 pub fn parse(v: &Value) -> Option<SessionInfo> {
@@ -289,6 +289,20 @@ mod tests {
         assert_eq!((info.model.word(), info.has_effort, info.effort, info.ctx_used, info.ctx_window, info.fresh), ("OPUS", false, Effort::High, 0, 200_000, true));
         assert_eq!((info.session.as_str(), info.cost_cents, info.windows), ("", 0, [None, None]));
         assert_eq!(parse(&Value::Null), None);
+    }
+
+    #[test]
+    fn the_model_button_steps_between_opus_and_fable_by_default() {
+        let models = default_models();
+        let (opus, fable) = (Model::new("opus"), Model::new("fable"));
+        assert_eq!(models, [opus, fable], "a fixed pair, not whatever this machine happens to have run");
+        assert_eq!(next_in(&models, opus), Some(fable));
+        assert_eq!(next_in(&models, fable), Some(opus), "and round again");
+        // On a model that is not in the list at all, the button leads to the first of them.
+        assert_eq!(next_in(&models, Model::new("sonnet")), Some(opus));
+        // A list of one has nowhere to go: the panel knocks rather than send a change that would not move.
+        assert_eq!(next_in(&[opus], opus), None);
+        assert_eq!(next_in(&[], opus), None);
     }
 
     #[test]

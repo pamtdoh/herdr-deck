@@ -136,7 +136,7 @@ On another machine or network (macOS: rustup and the ARM target are all it needs
 | Knob push | While the name is up after a turn: back to the resting screen. Otherwise: jump to the next agent that needs you (blocked, then done) |
 | Knob long-press | Settings (below) |
 | Left / right | Effort down / up: LOW · MED · HIGH · XHIGH · MAX · ULTRA (ultracode). Sent 0.7 s after the last press. Held down, a button repeats like a key (after 0.4 s, then every 0.15 s), here and in the settings; a repeat never counts as the confirming press of TURN OFF / STOCK FW |
-| Middle | The next model (see Models below). Shows its name with a `?` and the context that would be re-read uncached; press again within 4 s to send, leave it or press anything else to drop it. A session that has not replied yet since it started, was cleared or was compacted switches on one press |
+| Middle | The next model: Opus and Fable unless `~/.config/pixbar/models` says otherwise (see Models below). Shows its name with a `?` and the context that would be re-read uncached; press again within 4 s to send, leave it or press anything else to drop it. A session that has not replied yet since it started, was cleared or was compacted switches on one press |
 
 The left strip has one block per agent, coloured by status. Focus is brightness: the focused block is at full
 brightness, working / done agents at 40 %, idle ones at 18 %, and a blocked one breathes below the focused level.
@@ -166,14 +166,24 @@ the screen, and anything unexpected ends the sequence with the picker closed and
 
 ## Models
 
-The panel has no list of models. It draws the name the bridge makes of Claude Code's own (`Opus 5 (1M context)`
-is `OPUS`, `Claude Sonnet 4.5` is `SONNET`; a name too long for the row gives way to the effort word), and the
-middle button leads to the next of the models in use on your machine: the ones your sessions have been on in the
-last 30 days, most recent first. With one model in use the button has nowhere to go and knocks. To choose
-yourself, write the names into `~/.config/pixbar/models`, one per line, as the picker calls them (`Opus`,
-`Sonnet`). A session on a model without effort levels shows none, and a session that Claude Code has not
-reported on shows `--` and takes no presses. `5H` and `7D` exist for subscription accounts only; elsewhere they
-read `--`. An effort stop a session turns out not to have (ultracode, without workflows) is not offered again.
+**The middle button steps between Opus and Fable.** To step through other models, or more than two, write the
+names into `~/.config/pixbar/models`, one per line, as Claude Code's `/model` picker calls them:
+
+```sh
+printf 'Opus\nSonnet\nHaiku\n' > ~/.config/pixbar/models     # what the middle button steps through
+```
+
+Names are matched on their first word, ignoring case, so `Sonnet`, `sonnet` and `Claude Sonnet 4.5` all pick the
+same row; `#` comments and blank lines are skipped, and the file is re-read within 10 s of a change. Where the
+picker has no row for a name, the change snaps back on the panel and the bridge's log names the rows it did see.
+With one name in the file the button has nowhere to go and knocks.
+
+The panel itself has no list of models: it draws the name the bridge makes of Claude Code's own (`Opus 5 (1M
+context)` is `OPUS`, `Claude Sonnet 4.5` is `SONNET`; a name too long for the row gives way to the effort word),
+and asks for the one it is told the button leads to. A session on a model without effort levels shows none, and a
+session that Claude Code has not reported on shows `--` and takes no presses. `5H` and `7D` exist for
+subscription accounts only; elsewhere they read `--`. An effort stop a session turns out not to have (ultracode,
+without workflows) is not offered again.
 
 ## What goes over the network, and who is trusted
 
