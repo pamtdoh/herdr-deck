@@ -380,7 +380,7 @@ fn start_device(route: &Route, told: &mut Option<String>) -> bool {
             return Ok(false);
         }
         eprintln!("starting the pixbar program on {route}");
-        panel.start()?;
+        panel.start(false)?;
         deploy::remember(&mac);
         Ok(true)
     });
@@ -405,7 +405,7 @@ fn usb_link(told: &mut Option<String>) -> std::io::Result<Option<Link>> {
             return Ok(None);
         }
         eprintln!("starting the pixbar program over the cable");
-        panel.start()?;
+        panel.start(false)?;
         deploy::remember(&mac);
     }
     panel.into_link(DEFAULT_PORT).map(Some)

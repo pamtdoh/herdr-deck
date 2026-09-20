@@ -74,8 +74,6 @@ fn daemonize() {
         libc::dup2(log, 1);
         libc::dup2(log, 2);
     }
-    // The device shell has no pidof or pkill; the stop script reads this.
-    let _ = std::fs::write("/tmp/pixbar-device.pid", std::process::id().to_string());
 }
 
 /// Settings changed on the panel (knob long-press).
@@ -166,6 +164,11 @@ fn main() {
     let mut inputs = input::Inputs::open().expect("open knob and buttons");
     inputs.log = args.log_input;
     let mut hosts = net::Hosts::listen(args.port).expect("listen for hosts");
+    if args.daemon {
+        // The device shell has no pidof or pkill; the stop script reads this. Written only now: a second copy
+        // dies on the line above, and must not pass for the one that runs.
+        let _ = std::fs::write("/tmp/pixbar-device.pid", std::process::id().to_string());
+    }
     let (mut ui, mut frame) = (Ui::new(), Frame::new());
     ui.settings = load_settings();
     if let Some(b) = args.brightness {

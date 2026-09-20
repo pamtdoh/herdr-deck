@@ -10,6 +10,9 @@ use crate::{server, usb};
 /// The ARM build of pixbar-device that build.rs made for this bridge.
 static DEVICE_PROGRAM: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/pixbar-device"));
 
+/// `mkdir` is the device shell's test-and-set. /tmp is the panel's RAM: a lock does not outlive a power-up.
+const LOCK: &str = "mkdir /tmp/pixbar-starting 2>/dev/null && echo mine";
+const UNLOCK: &str = "rmdir /tmp/pixbar-starting 2>/dev/null";
 const STOP: &str = "if [ -f /tmp/pixbar-device.pid ]; then kill $(cat /tmp/pixbar-device.pid) 2>/dev/null; rm -f /tmp/pixbar-device.pid; fi";
 
 /// FNV-1a, to tell builds apart; the device reports the same over its own executable.
@@ -147,8 +150,28 @@ impl Panel {
 
     /// Pushes the device program and starts it in place of Ulanzi's app (or of an older copy of itself).
     /// Ulanzi's app is only stopped for a program that arrived whole, and comes back if ours does not stay up.
-    pub fn start(&mut self) -> io::Result<()> {
+    ///
+    /// One start at a time: `deploy` beside a running `run` on the same cable is two of them, because `run` sees
+    /// the old copy go and starts one of its own. Unguarded, each stops the other's copy, the slower one finds the
+    /// port taken, and its failure path puts Ulanzi's app on the panel beside ours. `replace`: what `deploy` asks
+    /// for; without it a copy that is up once the lock is ours is left as it is.
+    pub fn start(&mut self, replace: bool) -> io::Result<()> {
         self.wait_for_wifi()?;
+        let asked = std::time::Instant::now();
+        while !self.shell(LOCK)?.contains("mine") {
+            // A start takes a few seconds. One that holds the lock this long has lost its bridge.
+            if asked.elapsed() > std::time::Duration::from_secs(20) {
+                self.shell(UNLOCK)?;
+                continue;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+        let started = if !replace && self.runs_pixbar()? { Ok(()) } else { self.start_locked() };
+        let _ = self.shell(UNLOCK);
+        started
+    }
+
+    fn start_locked(&mut self) -> io::Result<()> {
         self.shell(STOP)?;
         self.push(DEVICE_PROGRAM, "/tmp/pixbar-device.new", 0o100755)?;
         // --daemon detaches, so the shell comes back.
@@ -171,7 +194,7 @@ pub fn start(route: &Route) -> io::Result<String> {
     let once = || {
         let mut panel = Panel::open(route)?;
         let mac = panel.mac()?;
-        panel.start()?;
+        panel.start(true)?;
         Ok(mac)
     };
     // The cable changes hands: an adb server takes it the moment another program lets go, and for a second or

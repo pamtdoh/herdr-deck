@@ -90,13 +90,22 @@ pub fn shell_detached(command: &str) -> io::Result<()> {
 pub fn push(bytes: &[u8], path: &str, mode: u32) -> io::Result<()> {
     let mut stream = panel()?;
     ask(&mut stream, "sync:")?;
+    sync_push(&mut stream, bytes, path, mode)
+}
+
+/// One file over a socket that is the device's sync service.
+fn sync_push(stream: &mut TcpStream, bytes: &[u8], path: &str, mode: u32) -> io::Result<()> {
     stream.write_all(&sync_send(bytes, path, mode))?;
     let mut answer = [0u8; 8];
     stream.read_exact(&mut answer)?;
     let mut why = Vec::new();
     if &answer[..4] != b"OKAY" {
-        let _ = stream.take(u32::from_le_bytes(answer[4..].try_into().unwrap()) as u64).read_to_end(&mut why);
+        let _ = (&*stream).take(u32::from_le_bytes(answer[4..].try_into().unwrap()) as u64).read_to_end(&mut why);
     }
+    // Leave the way the adb tool does. The TC002's adbd exits when the sync service is hung up on without this;
+    // init starts it again, but every connection to the panel is gone for some three seconds, the cable's and
+    // the network's alike, and the step after a push (starting what was pushed) finds nobody there.
+    let _ = stream.write_all(&[b"QUIT".as_slice(), &0u32.to_le_bytes()].concat());
     sync_verdict(&[answer.as_slice(), &why].concat(), path)
 }
 
@@ -106,4 +115,31 @@ pub fn stream(service: &str) -> io::Result<TcpStream> {
     ask(&mut stream, service)?;
     stream.set_read_timeout(None)?;
     Ok(stream)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::TcpListener;
+
+    #[test]
+    fn a_push_takes_its_leave_of_the_sync_service() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let device = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut sent = vec![0u8; sync_send(b"program", "/tmp/x", 0o100755).len()];
+            stream.read_exact(&mut sent).unwrap();
+            stream.write_all(b"OKAY\0\0\0\0").unwrap();
+            let mut rest = Vec::new();
+            stream.read_to_end(&mut rest).unwrap();
+            (sent, rest)
+        });
+        let mut stream = TcpStream::connect(addr).unwrap();
+        sync_push(&mut stream, b"program", "/tmp/x", 0o100755).unwrap();
+        drop(stream);
+        let (sent, rest) = device.join().unwrap();
+        assert_eq!(sent, sync_send(b"program", "/tmp/x", 0o100755));
+        assert_eq!(rest, b"QUIT\0\0\0\0", "hanging up without it takes the panel's adbd down");
+    }
 }
