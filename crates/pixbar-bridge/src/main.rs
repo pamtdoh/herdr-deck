@@ -699,16 +699,13 @@ fn main() {
 
     match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
         ["run"] => run(herdr, device),
-        // Called by Claude Code's status line command with its input on stdin. Prints nothing: used as the whole
-        // command it leaves the line empty, and inside a script it stays out of that script's output.
+        // Handed Claude Code's status line input on stdin, by the user's own status line script (`install` adds
+        // the call) or as the whole command. Prints nothing: it stays out of that script's output.
         ["statusline"] => {
             let mut input = String::new();
             if let Err(e) = std::io::stdin().read_to_string(&mut input).and_then(|_| claude::keep(&input)) {
                 eprintln!("statusline: {e}");
             }
-            // After `install`, this is Claude Code's whole status line command: the one that was there before
-            // still draws the line. Whatever went wrong above must not cost the user their status line.
-            install::pass_on(&input);
         }
         ["install", flags @ ..] if flags.iter().all(|f| ["--no-service", "--no-statusline"].contains(f)) => {
             if let Err(e) = install::install(&Herdr::default_socket(), !flags.contains(&"--no-service"), !flags.contains(&"--no-statusline")) {

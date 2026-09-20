@@ -128,24 +128,21 @@ fn status_line(r: &mut Report) {
     match settings["statusLine"]["command"].as_str() {
         Some(c) if ours(c) => match program_of(c) {
             Some(p) if !p.exists() => r.bad(format!("{} runs {}, which is not there", file.display(), p.display()), "pixbar-bridge install"),
-            _ => {
-                r.ok(format!("{}: {c}", file.display()));
-                match install::previous_command() {
-                    Some(p) => r.ok(format!("your own status line still draws the line: {p}")),
-                    None => r.note("no status line of your own behind it: the line stays empty"),
-                }
-            }
+            _ => r.ok(format!("{}: {c} (the whole command; you have no status line of your own, so the line is empty)", file.display())),
         },
         Some(c) => {
-            // The hookup made by hand: their script pipes its input to a pixbar-bridge somewhere.
-            let script = c.split_whitespace().last().and_then(|f| std::fs::read_to_string(f).ok()).unwrap_or_default();
-            let called = script.lines().find(|l| l.contains("pixbar-bridge") && l.contains("statusline") && !l.trim_start().starts_with('#'));
-            let program = called.and_then(|l| l.split_whitespace().find(|w| w.contains("pixbar-bridge"))).map(|w| w.trim_matches(['"', '\'']));
+            // The user's own script, which hands its input on to the bridge: in the block `install` adds, or in a
+            // line someone put there by hand.
+            let script = install::script_of(c);
+            let text = script.as_ref().and_then(|f| std::fs::read_to_string(f).ok()).unwrap_or_default();
+            let call = text.lines().find(|l| !l.trim_start().starts_with('#') && l.contains("pixbar-bridge") && l.contains("statusline"));
+            let program = call.and_then(|l| l.split_whitespace().find(|w| w.contains("pixbar-bridge"))).map(|w| w.trim_matches(['"', '\'']));
+            let name = script.as_ref().map_or(c.to_string(), |f| f.display().to_string());
             match program {
-                Some(p) if Path::new(p).exists() && !p.contains("/target/") => r.ok(format!("{c} calls {p}")),
-                Some(p) if Path::new(p).exists() => r.bad(format!("{c} calls {p}, inside a build directory; when that goes, the panel silently stops following"), "pixbar-bridge install (your script keeps drawing the line)"),
-                Some(p) => r.bad(format!("{c} calls {p}, which is not there: nothing reaches the panel"), "pixbar-bridge install"),
-                None => r.bad(format!("the status line is `{c}`, which does not call pixbar-bridge"), "pixbar-bridge install (it keeps your command and runs it)"),
+                Some(p) if !Path::new(p).exists() => r.bad(format!("{name} calls {p}, which is not there: nothing reaches the panel"), "pixbar-bridge install"),
+                Some(p) if p.contains("/target/") => r.bad(format!("{name} calls {p}, inside a build directory; when that goes, the panel silently stops following"), "pixbar-bridge install (it points the call at the installed bridge)"),
+                Some(p) => r.ok(format!("{name} calls {p}")),
+                None => r.bad(format!("the status line is `{c}`, which does not call pixbar-bridge"), "pixbar-bridge install adds the call to a shell script that reads its input with `input=$(cat)`, and says what to add to any other"),
             }
         }
         None => r.bad(format!("{} has no statusLine", file.display()), "pixbar-bridge install"),

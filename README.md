@@ -56,11 +56,26 @@ pixbar-bridge doctor                      # every link from Claude Code to the p
   (`journalctl --user -u pixbar-bridge`), a LaunchAgent on macOS (`~/Library/Logs/pixbar-bridge.log`; written but
   not yet tried on a Mac). Installed from inside a pane of a named herdr session, the service is pinned to that
   session's socket. `--no-service` leaves this out; `pixbar-bridge run` in a terminal does the same job.
-- It makes `pixbar-bridge statusline` Claude Code's status line command (`statusLine.command` in
-  `~/.claude/settings.json`; only that one value is rewritten, and a copy of the file is kept beside it). Model,
-  effort, context, cost, usage windows and the session name all come from there. The command you had is kept in
-  `~/.config/pixbar/statusline-command` and still draws your line, from the same input. `--no-statusline` leaves
-  this out.
+- It adds a call to your status line script, the way an installer adds a PATH line to a shell profile. Model,
+  effort, context, cost, usage windows and the session name all come from Claude Code's status line input, so the
+  script that draws your line hands a copy of it to the bridge, right after it has read it:
+
+  ```sh
+  input=$(cat)
+  # >>> pixbar-bridge >>>
+  # Added by `pixbar-bridge install`, removed by `pixbar-bridge uninstall`: the panel's model, effort and context.
+  printf '%s' "$input" | /home/you/.local/bin/pixbar-bridge statusline 2>/dev/null || true
+  # <<< pixbar-bridge <<<
+  ```
+
+  The script stays yours and stays the status line command; `settings.json` is not touched. A second `install`
+  brings the block up to date where it stands, and a call to the bridge that you had put in by hand is taken
+  over in place. It knows how to add to a shell script that reads its input into a variable (`input=$(cat)`, the
+  form in Claude Code's examples and the one `/statusline` writes). For anything else (a Python script, a `jq`
+  one-liner in `settings.json`) it changes nothing and prints the line to add: `pixbar-bridge statusline` takes the
+  JSON on its stdin and prints nothing. Only where there is no status line at all does `install` set
+  `statusLine.command` in `~/.claude/settings.json`, to `pixbar-bridge statusline` by itself. `--no-statusline`
+  leaves all of this out.
 
 Claude Code runs the status line whenever the model, the effort or the token count changes, so the panel follows a
 `/model` typed in the session as fast as one made with its own button, and the context figure is Claude Code's own
@@ -182,7 +197,7 @@ read `--`. An effort stop a session turns out not to have (ultracode, without wo
 - `pixbar-bridge stock [IP|usb]`, or STOCK FW in the panel's settings: Ulanzi's firmware now, and it stays until
   `deploy` or the next power-up. Switching the panel off and on always ends in Ulanzi's firmware for a moment:
   nothing of this project is on its flash except its settings (`/data/pixbar.conf`, 128 bytes).
-- `pixbar-bridge uninstall`: removes the service, puts your status line command back as it was, and deletes
+- `pixbar-bridge uninstall`: removes the service, takes its block out of your status line script, and deletes
   `~/.local/bin/pixbar-bridge`, `~/.config/pixbar` and `~/.cache/pixbar`.
 - If the panel ever does not come up at all, Ulanzi's recovery is to hold its reset button while switching it on.
   This project has never needed it.

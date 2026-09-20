@@ -3,21 +3,21 @@
 //!
 //! - a copy of this binary in `~/.local/bin`, so that nothing points into a build directory;
 //! - a service that runs `pixbar-bridge run` from login on (a systemd user unit, or a LaunchAgent on macOS);
-//! - Claude Code's status line, which is where model, effort and context come from: `statusLine.command` in
-//!   `settings.json` becomes `pixbar-bridge statusline`, and the command that was there is kept and still
-//!   draws the line (see `pass_on`).
+//! - Claude Code's status line, which is where model, effort and context come from: a marked block in the user's
+//!   own status line script that hands Claude Code's input on to `pixbar-bridge statusline`, the way an installer
+//!   adds a PATH line to a shell profile. The script stays the user's, and stays the status line command.
 
-use std::io::{self, Write};
+use std::io;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 
 use serde_json::Value;
 
 const UNIT: &str = "pixbar-bridge.service";
 const AGENT: &str = "dev.pixbar.bridge";
-/// Set for the status line command we wrap, so that a script which calls `pixbar-bridge statusline` itself
-/// (the older, hand-made hookup) does not start the whole thing again.
-const INSIDE: &str = "PIXBAR_STATUSLINE";
+/// Around what `install` adds to a status line script, so that it can be found again, brought up to date and removed.
+const BEGIN: &str = "# >>> pixbar-bridge >>>";
+const END: &str = "# <<< pixbar-bridge <<<";
 
 fn var(name: &str) -> Option<PathBuf> {
     std::env::var_os(name).filter(|v| !v.is_empty()).map(PathBuf::from)
@@ -27,7 +27,7 @@ fn home() -> io::Result<PathBuf> {
     var("HOME").ok_or_else(|| io::Error::other("HOME is not set"))
 }
 
-/// `~/.config/pixbar`: the devices this machine starts, and the status line command we stand in front of.
+/// `~/.config/pixbar`: the devices this machine starts, and the models its button goes through.
 pub fn config_dir() -> Option<PathBuf> {
     Some(var("XDG_CONFIG_HOME").or_else(|| Some(var("HOME")?.join(".config")))?.join("pixbar"))
 }
@@ -38,14 +38,6 @@ pub fn claude_dir() -> Option<PathBuf> {
 
 pub fn installed_bin() -> io::Result<PathBuf> {
     Ok(home()?.join(".local/bin/pixbar-bridge"))
-}
-
-fn previous_command_file() -> Option<PathBuf> {
-    Some(config_dir()?.join("statusline-command"))
-}
-
-pub fn previous_command() -> Option<String> {
-    std::fs::read_to_string(previous_command_file()?).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
 }
 
 /// Replaces `file` in one step, so that nothing ever reads half of it.
@@ -244,14 +236,122 @@ fn is_ours(command: &str) -> bool {
     command.contains("pixbar-bridge") && command.trim_end().ends_with("statusline")
 }
 
-fn our_command(bin: &Path) -> String {
+/// The binary as a word of a shell command.
+fn quoted(bin: &Path) -> String {
     let bin = bin.to_string_lossy();
-    // The command goes through a shell.
     if bin.chars().all(|c| c.is_ascii_alphanumeric() || "/._-+".contains(c)) {
-        format!("{bin} statusline")
+        bin.into_owned()
     } else {
-        format!("'{}' statusline", bin.replace('\'', "'\\''"))
+        format!("'{}'", bin.replace('\'', "'\\''"))
     }
+}
+
+fn our_command(bin: &Path) -> String {
+    format!("{} statusline", quoted(bin))
+}
+
+/// The words of a shell command, as far as a status line command goes: quotes, and a home directory.
+fn words(command: &str) -> Vec<String> {
+    let (mut words, mut word, mut quote, mut any) = (Vec::new(), String::new(), None, false);
+    for c in command.chars() {
+        match (quote, c) {
+            (Some(q), c) if c == q => quote = None,
+            (None, '\'' | '"') => (quote, any) = (Some(c), true),
+            (None, c) if c.is_whitespace() => {
+                if any || !word.is_empty() {
+                    words.push(std::mem::take(&mut word));
+                }
+                any = false;
+            }
+            (_, c) => word.push(c),
+        }
+    }
+    if any || !word.is_empty() {
+        words.push(word);
+    }
+    let home = var("HOME").map(|h| h.to_string_lossy().into_owned()).unwrap_or_default();
+    let at_home = |w: String| match w.strip_prefix("~/").or(w.strip_prefix("$HOME/")).or(w.strip_prefix("${HOME}/")) {
+        Some(rest) => format!("{home}/{rest}"),
+        None => w,
+    };
+    words.into_iter().map(at_home).collect()
+}
+
+/// The script a status line command runs, where it runs one: the first of its words that names a text file
+/// (`bash ~/.claude/statusline.sh`, `/bin/sh /path/line.sh`, or the script by itself).
+pub fn script_of(command: &str) -> Option<PathBuf> {
+    words(command).into_iter().filter(|w| w.contains('/')).map(PathBuf::from).find(|file| std::fs::read(file).is_ok_and(|bytes| !bytes.starts_with(b"\x7fELF") && std::str::from_utf8(&bytes).is_ok()))
+}
+
+/// The variable a shell script reads Claude Code's input into, if `line` is where it does: `input=$(cat)`, the
+/// form in Claude Code's own examples and the one `/statusline` writes.
+fn input_variable(line: &str) -> Option<&str> {
+    let (name, read) = line.trim().split_once('=')?;
+    let reads_stdin = ["$(cat)", "\"$(cat)\"", "`cat`", "\"`cat`\""].contains(&read.trim().trim_end_matches(';'));
+    (reads_stdin && !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')).then_some(name)
+}
+
+fn calls_us(line: &str) -> bool {
+    !line.trim_start().starts_with('#') && line.contains("pixbar-bridge") && line.contains("statusline")
+}
+
+/// A shell script with our block taken out again.
+fn without_call(script: &str) -> String {
+    let (mut out, mut inside) = (String::new(), false);
+    for line in script.split_inclusive('\n') {
+        match line.trim() {
+            BEGIN => inside = true,
+            END if inside => inside = false,
+            _ if !inside => out.push_str(line),
+            _ => {}
+        }
+    }
+    out
+}
+
+/// A shell script with our block in it. Where it goes: where it already is; else in place of a call to the bridge
+/// that was put there by hand; else right after the line that reads Claude Code's input, which our call is handed
+/// on from. `None`: not a script we know how to add to (it does not read its input into a variable, or it is not
+/// a shell script at all).
+fn with_call(script: &str, bin: &Path) -> Option<String> {
+    let shell = script.lines().next().is_none_or(|first| !first.starts_with("#!") || first.contains("sh"));
+    let lines: Vec<&str> = script.split_inclusive('\n').collect();
+    let read_at = lines.iter().position(|l| input_variable(l).is_some()).filter(|_| shell)?;
+    let variable = input_variable(lines[read_at])?;
+    // Which lines are ours already: a block of ours from its first line to its last, or a call by hand.
+    let mut inside = false;
+    let ours: Vec<bool> = lines
+        .iter()
+        .map(|l| {
+            let begins = l.trim() == BEGIN;
+            let part = inside || begins || calls_us(l);
+            inside = (inside || begins) && l.trim() != END;
+            part
+        })
+        .collect();
+    let stands_at = ours.iter().position(|&o| o).filter(|&at| at > read_at);
+    let indent: String = lines[stands_at.unwrap_or(read_at)].chars().take_while(|c| c.is_whitespace() && *c != '\n').collect();
+    let block = format!(
+        "{indent}{BEGIN}\n{indent}# Added by `pixbar-bridge install`, removed by `pixbar-bridge uninstall`: the panel's model, effort and context.\n{indent}printf '%s' \"${variable}\" | {} statusline 2>/dev/null || true\n{indent}{END}\n",
+        quoted(bin)
+    );
+    let mut out = String::new();
+    for (i, line) in lines.iter().enumerate() {
+        if Some(i) == stands_at {
+            out.push_str(&block);
+        }
+        if ours[i] {
+            continue;
+        }
+        out.push_str(line);
+        if i == read_at && stands_at.is_none() {
+            if !line.ends_with('\n') {
+                out.push('\n');
+            }
+            out.push_str(&block);
+        }
+    }
+    Some(out)
 }
 
 /// The settings text with `statusLine.command` set to `command` (`None`: the whole `statusLine` taken out),
@@ -300,34 +400,52 @@ fn with_command(text: &str, command: Option<&str>) -> io::Result<String> {
     }
 }
 
+/// Writes a script back where it was: through a symlink (a dotfiles checkout), and with its permissions.
+fn rewrite_script(file: &Path, text: &str) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let real = std::fs::canonicalize(file)?;
+    let mode = std::fs::metadata(&real)?.permissions().mode();
+    write_whole(&real, text.as_bytes(), Some(mode))
+}
+
 fn install_status_line(bin: &Path) -> io::Result<()> {
     let file = claude_dir().ok_or_else(|| io::Error::other("HOME is not set"))?.join("settings.json");
     let text = std::fs::read_to_string(&file).unwrap_or_else(|_| "{}\n".into());
     let now: Value = serde_json::from_str(&text).map_err(|e| io::Error::other(format!("{}: not JSON ({e}); not touching it", file.display())))?;
-    let ours = our_command(bin);
+    let line = format!("printf '%s' \"$input\" | {} statusline 2>/dev/null || true", quoted(bin));
     match now["statusLine"]["command"].as_str() {
-        Some(c) if c == ours => {
-            println!("status line  {} (already installed)", file.display());
-            return Ok(());
+        // No status line of the user's to add to: ours is the whole command, and the line stays empty.
+        None => {
+            if !now["statusLine"].is_null() {
+                return Err(io::Error::other(format!("{}: there is a statusLine without a command; not touching it", file.display())));
+            }
+            write_whole(&file, with_command(&text, Some(&our_command(bin)))?.as_bytes(), None)?;
+            println!("status line  {}: statusLine.command = {} (you had none; it draws nothing)", file.display(), our_command(bin));
         }
-        // Ours, from another place (an earlier install, a build directory): only the path changes.
-        Some(c) if is_ours(c) => {}
+        Some(c) if is_ours(c) => {
+            if c != our_command(bin) {
+                write_whole(&file, with_command(&text, Some(&our_command(bin)))?.as_bytes(), None)?;
+            }
+            println!("status line  {}: statusLine.command = {}", file.display(), our_command(bin));
+        }
         Some(theirs) => {
-            let keep = previous_command_file().ok_or_else(|| io::Error::other("HOME is not set"))?;
-            write_whole(&keep, format!("{theirs}\n").as_bytes(), None)?;
-            println!("status line  your command still draws the line; it is kept in {}", keep.display());
-            if std::fs::read_to_string(theirs.split_whitespace().last().unwrap_or_default()).is_ok_and(|script| script.contains("pixbar-bridge")) {
-                println!("             (that script calls pixbar-bridge itself, from the earlier hand-made hookup: that line can go now)");
+            let script = script_of(theirs);
+            let added = script.as_ref().and_then(|f| Some((f, std::fs::read_to_string(f).ok()?))).and_then(|(f, was)| Some((f, with_call(&was, bin)?, was)));
+            match added {
+                Some((script, text, was)) if text == was => println!("status line  {} (already calls this bridge)", script.display()),
+                Some((script, text, was)) => {
+                    let adopted = was.lines().any(|l| calls_us(l)) && !was.contains(BEGIN);
+                    rewrite_script(script, &text)?;
+                    println!("status line  {}: {}", script.display(), if adopted { "the call you had put in by hand now goes to the installed bridge, in a marked block" } else { "a marked block hands Claude Code's input on to the bridge" });
+                }
+                None => {
+                    println!("status line  not changed: `{theirs}` is not a shell script that reads its input with `input=$(cat)`, so there is no safe place to add to.");
+                    println!("             Wherever it has Claude Code's input (the JSON on its stdin), hand a copy to:  {}", our_command(bin));
+                    println!("             In a shell script:  input=$(cat);  {line}");
+                }
             }
         }
-        None => {}
     }
-    let backup = file.with_file_name("settings.json.before-pixbar");
-    if file.exists() && !backup.exists() {
-        std::fs::copy(&file, &backup)?;
-    }
-    write_whole(&file, with_command(&text, Some(&ours))?.as_bytes(), None)?;
-    println!("status line  {}: statusLine.command = {ours}", file.display());
     Ok(())
 }
 
@@ -335,32 +453,23 @@ fn uninstall_status_line() -> io::Result<()> {
     let Some(file) = claude_dir().map(|d| d.join("settings.json")) else { return Ok(()) };
     let Ok(text) = std::fs::read_to_string(&file) else { return Ok(()) };
     let now: Value = serde_json::from_str(&text).map_err(|e| io::Error::other(format!("{}: not JSON ({e}); not touching it", file.display())))?;
-    if now["statusLine"]["command"].as_str().is_some_and(is_ours) {
-        let previous = previous_command();
-        write_whole(&file, with_command(&text, previous.as_deref())?.as_bytes(), None)?;
-        match previous {
-            Some(p) => println!("status line  {}: statusLine.command = {p}, as before", file.display()),
-            None => println!("status line  {}: statusLine removed (there was none before)", file.display()),
+    match now["statusLine"]["command"].as_str() {
+        Some(c) if is_ours(c) => {
+            write_whole(&file, with_command(&text, None)?.as_bytes(), None)?;
+            println!("status line  {}: statusLine removed (it was only ours)", file.display());
         }
+        Some(theirs) => {
+            if let Some(script) = script_of(theirs) {
+                let was = std::fs::read_to_string(&script)?;
+                if was.contains(BEGIN) {
+                    rewrite_script(&script, &without_call(&was))?;
+                    println!("status line  {}: our block is out again", script.display());
+                }
+            }
+        }
+        None => {}
     }
-    let _ = std::fs::remove_file(file.with_file_name("settings.json.before-pixbar"));
     Ok(())
-}
-
-/// The `statusline` subcommand, after it has kept Claude Code's input: the status line command that was there
-/// before us draws the line, from the same input.
-pub fn pass_on(input: &str) {
-    if std::env::var_os(INSIDE).is_some() {
-        return;
-    }
-    let Some(previous) = previous_command() else { return };
-    let child = Command::new("sh").args(["-c", &previous]).env(INSIDE, "1").stdin(Stdio::piped()).spawn();
-    if let Ok(mut child) = child {
-        if let Some(mut stdin) = child.stdin.take() {
-            let _ = stdin.write_all(input.as_bytes());
-        }
-        let _ = child.wait();
-    }
 }
 
 // ---------------------------------------------------------------- the two commands
@@ -437,5 +546,41 @@ mod tests {
         assert!(is_ours("'/home/my name/bin/pixbar-bridge' statusline"));
         assert!(!is_ours("bash /home/me/.claude/statusline-command.sh"));
         assert_eq!(our_command(Path::new("/home/my name/bin/pixbar-bridge")), "'/home/my name/bin/pixbar-bridge' statusline");
+    }
+
+    const SCRIPT: &str = "#!/usr/bin/env bash\n# my line\n\ninput=$(cat)\n\ncwd=$(echo \"$input\" | jq -r .cwd)\nprintf '%s' \"$cwd\"\n";
+
+    #[test]
+    fn a_marked_block_goes_in_after_the_input_is_read_and_comes_out_again() {
+        let bin = Path::new("/home/me/.local/bin/pixbar-bridge");
+        let with = with_call(SCRIPT, bin).unwrap();
+        let expected = "input=$(cat)\n# >>> pixbar-bridge >>>\n# Added by `pixbar-bridge install`, removed by `pixbar-bridge uninstall`: the panel's model, effort and context.\nprintf '%s' \"$input\" | /home/me/.local/bin/pixbar-bridge statusline 2>/dev/null || true\n# <<< pixbar-bridge <<<\n\ncwd=";
+        assert!(with.contains(expected), "{with}");
+        assert_eq!(with_call(&with, bin).unwrap(), with, "again changes nothing");
+        assert_eq!(without_call(&with), SCRIPT, "and out again leaves the script as it was");
+        // The binary has moved: the block follows, and there is still one.
+        let moved = with_call(&with, Path::new("/opt/pixbar/pixbar-bridge")).unwrap();
+        assert!(moved.contains("| /opt/pixbar/pixbar-bridge statusline") && moved.matches("pixbar-bridge statusline").count() == 1, "{moved}");
+    }
+
+    #[test]
+    fn a_call_put_in_by_hand_is_taken_over_where_it_stands() {
+        let by_hand = SCRIPT.replace("\ncwd=", "\n  # the panel reads along\n  printf '%s' \"$input\" | /src/target/release/pixbar-bridge statusline 2>/dev/null || true\ncwd=");
+        let with = with_call(&by_hand, Path::new("/home/me/.local/bin/pixbar-bridge")).unwrap();
+        assert!(!with.contains("/src/target") && with.matches("pixbar-bridge statusline").count() == 1, "{with}");
+        assert!(with.contains("  # the panel reads along\n  # >>> pixbar-bridge >>>\n"), "their comment stays, the block takes the call's place and indent:\n{with}");
+        assert_eq!(with_call(&with, Path::new("/home/me/.local/bin/pixbar-bridge")).unwrap(), with, "and it stays where it stands");
+    }
+
+    #[test]
+    fn a_script_we_cannot_add_to_is_left_alone() {
+        let bin = Path::new("/b/pixbar-bridge");
+        assert_eq!(with_call("#!/usr/bin/env python3\nimport sys\ninput=$(cat)\n", bin), None, "not a shell script");
+        assert_eq!(with_call("#!/bin/sh\njq -r .model.display_name\n", bin), None, "reads its input straight into jq");
+        for line in ["data=\"$(cat)\"", "  IN=`cat`;", "input=$(cat)"] {
+            assert!(input_variable(line).is_some(), "{line}");
+        }
+        assert_eq!(input_variable("input=$(cat file)"), None);
+        assert_eq!(words("bash '/home/my name/line.sh' --x"), ["bash", "/home/my name/line.sh", "--x"]);
     }
 }
