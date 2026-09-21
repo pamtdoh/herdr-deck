@@ -133,7 +133,7 @@ On another machine or network (macOS: rustup and the ARM target are all it needs
 | Input | Action |
 |---|---|
 | Knob | Focus the next / previous agent in herdr, like Tab. A fast spin only focuses where it stops. The agent's name stays up for the linger time (10 s) |
-| Knob push | While the name is up after a turn: back to the resting screen. Otherwise: the menu (below); again to close it |
+| Knob push | While the name is up after a turn, or the effort rail or the model switch is showing: back to the resting screen (an effort still settling is sent, a model switch only armed is dropped). From the resting screen: the menu (below); again to close it |
 | Knob long-press | Settings (below) |
 | Left / right | Effort down / up: LOW · MED · HIGH · XHIGH · MAX · ULTRA (ultracode). Sent 0.7 s after the last press. Held down, a button repeats like a key (after 0.4 s, then every 0.15 s), here and in the settings; a repeat never counts as the confirming press of TURN OFF / STOCK FW |
 | Middle | The next model: Opus and Fable unless `~/.config/pixbar/models` says otherwise (see Models below). Shows its name with a `?` and the context that would be re-read uncached; press again within 4 s to send, leave it or press anything else to drop it. A session that has not replied yet since it started, was cleared or was compacted switches on one press |

@@ -291,6 +291,7 @@ mod tests {
         assert!(!menu_up(&ui, 300));
         assert_eq!(ui.input(&w, Input::Right, 400), None);
         assert_eq!(ui.tick(&w, 1200), Some(Intent::SetEffort { agent: 0, effort: Effort::Max }), "the buttons are the effort's again");
+        ui.tick(&w, 4000); // the rail has gone: a push while it is up would only put it away
 
         ui.input(&w, Input::KnobPush, 5000);
         ui.tick(&w, 14_000);
@@ -303,6 +304,39 @@ mod tests {
         ui.input(&w, Input::KnobLong, 20_700);
         ui.input(&w, Input::Right, 20_800);
         assert_eq!(ui.settings.brightness, Settings::default().brightness + settings::BRIGHTNESS_STEP);
+    }
+
+    #[test]
+    fn a_knob_push_puts_the_effort_rail_or_the_model_switch_away_and_opens_no_menu() {
+        let (mut w, mut ui) = (world(), Ui::new());
+        let menu_up = |ui: &Ui, w: &World, t: u64| {
+            let mut f = Frame::new();
+            ui.render(w, t, &mut f);
+            f.get(COMPACT_STEM.0, COMPACT_STEM.1) != Rgb::OFF
+        };
+        // The effort was still settling: the push sends it, as leaving it alone would have.
+        ui.input(&w, Input::Right, 0);
+        assert_eq!(ui.input(&w, Input::KnobPush, 300), Some(Intent::SetEffort { agent: 0, effort: Effort::Max }));
+        assert!(!menu_up(&ui, &w, 400));
+        assert_eq!(ui.tick(&w, 1200), None, "sent once");
+        w.agents[0].effort = Effort::Max;
+        // Sent already and only still on show: put away, nothing more to send.
+        ui.input(&w, Input::Left, 5000);
+        assert_eq!(ui.tick(&w, 5800), Some(Intent::SetEffort { agent: 0, effort: Effort::XHigh }));
+        assert_eq!(ui.input(&w, Input::KnobPush, 6000), None);
+        assert!(!menu_up(&ui, &w, 6100));
+
+        // An armed model switch: the push drops it, and the next press arms again rather than sending.
+        assert_eq!(ui.input(&w, Input::Middle, 10_000), None);
+        assert_eq!(ui.input(&w, Input::KnobPush, 10_500), None);
+        assert!(!menu_up(&ui, &w, 10_600));
+        assert_eq!(ui.input(&w, Input::Middle, 10_700), None, "armed anew");
+        assert!(matches!(ui.input(&w, Input::Middle, 10_800), Some(Intent::SetModel { agent: 0, .. })));
+        assert_eq!(ui.input(&w, Input::KnobPush, 11_000), None, "the switch on show is put away too");
+        assert!(!menu_up(&ui, &w, 11_100));
+
+        ui.input(&w, Input::KnobPush, 11_200);
+        assert!(menu_up(&ui, &w, 11_300), "from the resting screen the push is the menu");
     }
 
     #[test]

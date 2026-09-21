@@ -535,12 +535,19 @@ impl Ui {
             }
             // Push while the name lingers after a turn: "got it", back to the resting screen. Mid-spin the agent
             // under the knob gets the focus it was still owed.
-            // Otherwise: the menu. A change to the effort that was settling is sent first.
+            // The effort rail and the model switch are put away the same way, and end as they would have left
+            // alone: an effort that was settling is sent, a model switch that was only armed is dropped.
+            // Otherwise, from the resting screen: the menu.
             Input::KnobPush => {
                 if let Overlay::Picker { hover, sent, .. } = self.overlay {
                     self.overlay = Overlay::None;
                     self.knob_focus = (hover < world.agents.len()).then_some((hover, now));
                     return (sent != Some(hover) && hover < world.agents.len()).then_some(Intent::Focus(hover));
+                }
+                if matches!(self.overlay, Overlay::Effort { .. } | Overlay::Model { .. }) {
+                    let flushed = self.flush(world, now);
+                    self.overlay = Overlay::None;
+                    return flushed;
                 }
                 // Pushed again before the host has followed the knob: the menu is for the agent that was just
                 // dismissed, not for the one herdr still has.
@@ -548,7 +555,6 @@ impl Ui {
                     Some((asked, at)) if now.saturating_sub(at) < FOCUS_GRACE_MS && asked < world.agents.len() => asked,
                     _ => focused,
                 };
-                let flushed = self.flush(world, now);
                 self.overlay = Overlay::Menu(Menu {
                     agent,
                     entry: 0,
@@ -560,7 +566,7 @@ impl Ui {
                     bump_at: None,
                     sent_at: None,
                 });
-                flushed
+                None
             }
             Input::Left | Input::Right => {
                 // Injecting keys into a pane that shows a permission prompt could answer it.
