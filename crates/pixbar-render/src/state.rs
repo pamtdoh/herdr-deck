@@ -92,6 +92,35 @@ impl Effort {
     }
 }
 
+/// Something the menu (knob push) does to one session. The first two are typed into Claude Code's prompt;
+/// the rest are herdr's own and touch nothing inside the pane.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Command {
+    Compact,
+    Clear,
+    /// A new name for the herdr tab the session is in. The name is the keyboard's to give: the host asks for it.
+    Rename,
+    SplitRight,
+    SplitDown,
+    CloseTab,
+    ClosePane,
+}
+
+impl Command {
+    /// Goes in through the session's prompt, where an injected key could answer a permission dialog.
+    pub fn typed(self) -> bool {
+        matches!(self, Command::Compact | Command::Clear)
+    }
+
+    /// Whether this session takes it right now. Nothing is typed into a session that is blocked on a prompt or
+    /// that the host knows nothing about, nor into one in the middle of a turn: Claude Code would queue the
+    /// command and run it when the turn ends, on a reply nobody has read yet.
+    pub fn open_to(self, a: &Agent) -> bool {
+        !self.typed() || (a.reported && !matches!(a.status, Status::Blocked | Status::Working))
+    }
+}
+
 /// One of the account's usage windows, as Claude Code reports it to its status line.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Limit {

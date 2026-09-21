@@ -334,3 +334,33 @@ Lessons: at Max the picker's warning text pushes its footer off a short pane, so
 adbd kills a daemon that has not called `setsid` yet when the shell returns, so the parent lingers 300 ms.
 Not yet done: statusline-fed herdr sidebar tokens (needs an edit to `~/.claude/settings.json`), macOS run, models other than Opus/Fable (shown as Opus),
 more than 8 agents, brightness control from the device, hands-on confirmation of knob direction and button mapping.
+
+## 13. The menu: slash commands and herdr's pane calls (2026-09-21)
+
+Measured in an isolated `herdr --session pixbar-menu-test server` (0.8.2, headless; `workspace.create` gives it a pane) with a disposable Claude Code
+2.1.278 started in it, driven over the socket. Knob push used to jump to the next agent that needs you; the user took that out in favour of the menu.
+
+- **The prompt box on `pane.read visible`** is the `❯` line between two `─` rules. Empty it is `❯` alone; a draft reads `❯\u{a0}hello draft` (no-break
+  space). Grey hints read as text too: `❯\u{a0}/rename  [name]` after typing `/rename `, `❯ Press up to edit queued messages` while something is queued.
+  What was sent earlier is echoed above as `❯ /clear` (plain space), so only the boxed line counts. `ctrl+u` empties the box.
+- `pane.send_text "/clear"` shows `❯ /clear` with the completion list above it; `enter` runs it at once, the list does not swallow the key (§5's
+  hazard 5 did not show). `/compact` on an empty conversation answers `Not enough messages to compact.` `/clear`'s own description: "previous session
+  stays on disk (resumable with /resume)".
+- **Mid-turn, `/clear` + Enter is queued** (`❯ /clear · ctrl+enter to send now`) and runs when the turn ends, or when Esc interrupts it. Hence the
+  menu refuses `/compact` and `/clear` while the agent is working. (A first try used `sleep 30`, which Claude Code pushed into the background and ended
+  the turn; a long reply without tools is what keeps a turn open.)
+- Typed after a draft, the command would join it and Enter would send the lot: the bridge types only into an empty box and presses Enter only once
+  the box holds the command alone. Seen working both ways through `pixbar-bridge menu PANE COMMAND`: refused over `half a thought` and over a pending
+  `/rename `, both left as they were.
+- herdr: `pane.split {target_pane_id, direction: right|down, focus: true}` inherits the cwd and takes the focus; `pane.zoom {pane_id}` toggles and
+  focuses; `pane.close {pane_id}` and `tab.close {tab_id}` (the tab from `pane.get`) ask nothing; the last pane takes tab and workspace along. Every
+  rename call (`tab.rename`, `pane.rename`, `agent.rename`) wants the new name as an argument and `send_keys` reaches the pane's program, not herdr's
+  own UI, so herdr's rename prompt cannot be opened from outside. RENAME first typed Claude Code's `/rename ` and left the name to the keyboard; the
+  user meant the herdr tab, so it now splits a few lines off under the pane (`ratio` is the share the ORIGINAL pane keeps: 0.85 left 8 of 39 rows),
+  types ` pixbar-bridge name-tab TAB PANE; exit` there, and that asks, calls `tab.rename`, and focuses PANE before the shell's `exit` closes the asking
+  pane (left to itself herdr focused another neighbour). Panes get `HERDR_SOCKET_PATH`, so the subcommand finds the right server. Ctrl+C there leaves
+  the small pane open with a shell in it.
+- Not tried: the menu on the panel itself (simulator and unit tests only so far), prompt suggestions (a grey suggested prompt in an idle box would
+  read as a draft and make COMPACT / CLEAR refuse), a `chat:submit` moved to another key (the bridge reads it from `keybindings.json` as the picker does).
+- Later that day, the user's choices: COMPACT and CLEAR share one entry (left / right between them; both are the conversation's and refuse at the
+  same times), ZOOM (my addition) came out again. The ring is COMPACT/CLEAR, RENAME TAB, SPLIT RIGHT/DOWN, CLOSE TAB/PANE.

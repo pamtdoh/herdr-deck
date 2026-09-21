@@ -1,8 +1,9 @@
 //! Desktop stand-in for the TC002: renders the UI as an LED matrix and fakes the herdr side.
 //!
-//!   up / down or mouse wheel   knob rotate (hold to spin)   enter   knob push; hold = settings
+//!   up / down or mouse wheel   knob rotate (hold to spin)   enter   knob push = menu (name up: dismiss); hold = settings
 //!   left / right               effort buttons               space   model button (again to confirm)
 //!   B  cycle focused agent's status   P  pull / plug the USB cable (the battery drops 15 % each pull)   esc  quit
+//!   in the menu (enter): up / down = turn the carousel, left / right = the entry's other choice, space = do it
 //!   in settings (hold enter): up / down = page, left / right = value
 //!
 //! `pixbar-sim --dump` prints a scripted session as ASCII frames instead of opening a window;
@@ -11,7 +12,7 @@
 use std::time::Instant;
 
 use minifb::{Key, KeyRepeat, Window, WindowOptions};
-use pixbar_render::{Agent, Effort, Frame, HostLink, Info, Input, Intent, Limit, Model, Power, Row, Show, Status, Style, Ui, World, H, W};
+use pixbar_render::{Agent, Command, Effort, Frame, HostLink, Info, Input, Intent, Limit, Model, Power, Row, Show, Status, Style, Ui, World, H, W};
 
 const CELL: usize = 16;
 /// Pretend round trip to herdr + Claude Code before a change shows up in the world state.
@@ -83,6 +84,21 @@ impl FakeHost {
                     let a = &mut world.agents[agent];
                     (a.model, a.next_model) = (model, Some(a.model));
                 }
+                Intent::Run { agent, command } if agent < world.agents.len() => {
+                    println!("menu: {command:?} on {}", world.agents[agent].space);
+                    let a = &mut world.agents[agent];
+                    match command {
+                        Command::Compact => (a.ctx_used, a.fresh) = (17_000, true),
+                        Command::Clear => (a.ctx_used, a.fresh, a.cost_cents) = (0, true, 0),
+                        Command::CloseTab | Command::ClosePane if world.agents.len() > 1 => {
+                            world.agents.remove(agent);
+                            world.focused = world.focused.min(world.agents.len() - 1);
+                        }
+                        // Nothing of the others shows on the panel: the keyboard and herdr's window have the rest.
+                        _ => {}
+                    }
+                }
+                Intent::Run { .. } => {}
             }
             false
         });
@@ -122,40 +138,61 @@ fn dump() {
         (13200, None, "knob: two quick clicks, picker on agent 3; focus is the bright block"),
         (19000, None, "6 s later the name is still up (linger setting)"),
         (19100, Some(Input::KnobPush), ""),
-        (19200, None, "knob push: back to the resting screen at once"),
-        (20000, Some(Input::KnobLong), ""),
-        (20100, Some(Input::Right), ""),
-        (20400, None, "settings: brightness, right pressed once"),
-        (20500, Some(Input::KnobCw), ""),
-        (20600, Some(Input::Right), ""),
-        (20900, None, "settings: blocks, 3x3 touching; the strip is the preview"),
-        (21000, Some(Input::Right), ""),
-        (21010, Some(Input::Right), ""),
-        (21300, None, "settings: 2x2 touching, 32 agents"),
-        (21400, Some(Input::Left), ""),
-        (21410, Some(Input::Left), ""),
-        (21420, Some(Input::Left), ""),
-        (21500, Some(Input::KnobCw), ""),
-        (21800, None, "settings: row 1 shows the model, previewed live"),
-        (21900, Some(Input::KnobCw), ""),
-        (22000, Some(Input::Left), ""),
-        (22300, None, "settings: style 1 = tint"),
-        (22400, Some(Input::KnobCw), ""),
-        (22410, Some(Input::KnobCw), ""),
-        (22420, Some(Input::KnobCw), ""),
-        (22500, Some(Input::Right), ""),
-        (22900, None, "settings: name = dir"),
-        (23000, Some(Input::KnobCw), ""),
-        (23300, None, "settings: how long the name lingers"),
-        (23400, Some(Input::KnobCw), ""),
-        (23500, Some(Input::KnobCw), ""),
-        (23800, None, "settings: hosts, and how each is connected"),
-        (23810, Some(Input::KnobCw), ""),
-        (23850, None, "settings: device, wifi network"),
-        (23860, Some(Input::Right), ""),
-        (23890, None, "settings: device, its address"),
-        (23900, Some(Input::KnobPush), ""),
-        (24200, None, "rest: model tinted, context plain"),
+        (19180, None, "knob push while the name is up: back to the resting screen at once"),
+        (19200, Some(Input::KnobPush), ""),
+        (19280, None, "knob push at rest: the menu"),
+        (19300, Some(Input::Right), ""),
+        (19600, None, "menu: CLEAR, the first entry's other choice"),
+        (19700, Some(Input::Middle), ""),
+        (20500, None, "menu: CLEAR armed, fuses burning down, second press within 4 s does it"),
+        (20600, Some(Input::KnobCw), ""),
+        (20640, None, "menu: the knob dropped the armed CLEAR; one click on, the icons mid-slide"),
+        (20900, None, "menu: RENAME TAB"),
+        (21000, Some(Input::KnobCw), ""),
+        (21300, None, "menu: SPLIT RIGHT"),
+        (21400, Some(Input::Right), ""),
+        (21700, None, "menu: SPLIT DOWN"),
+        (21800, Some(Input::KnobCw), ""),
+        (22100, None, "menu: CLOSE TAB"),
+        (22200, Some(Input::Right), ""),
+        (22500, None, "menu: CLOSE PANE"),
+        (22600, Some(Input::KnobCw), ""),
+        (23300, None, "menu: round to COMPACT, where it opens"),
+        (23400, Some(Input::KnobPush), ""),
+        (23500, None, "knob push again: back to the resting screen"),
+        (30000, Some(Input::KnobLong), ""),
+        (30100, Some(Input::Right), ""),
+        (30400, None, "settings: brightness, right pressed once"),
+        (30500, Some(Input::KnobCw), ""),
+        (30600, Some(Input::Right), ""),
+        (30900, None, "settings: blocks, 3x3 touching; the strip is the preview"),
+        (31000, Some(Input::Right), ""),
+        (31010, Some(Input::Right), ""),
+        (31300, None, "settings: 2x2 touching, 32 agents"),
+        (31400, Some(Input::Left), ""),
+        (31410, Some(Input::Left), ""),
+        (31420, Some(Input::Left), ""),
+        (31500, Some(Input::KnobCw), ""),
+        (31800, None, "settings: row 1 shows the model, previewed live"),
+        (31900, Some(Input::KnobCw), ""),
+        (32000, Some(Input::Left), ""),
+        (32300, None, "settings: style 1 = tint"),
+        (32400, Some(Input::KnobCw), ""),
+        (32410, Some(Input::KnobCw), ""),
+        (32420, Some(Input::KnobCw), ""),
+        (32500, Some(Input::Right), ""),
+        (32900, None, "settings: name = dir"),
+        (33000, Some(Input::KnobCw), ""),
+        (33300, None, "settings: how long the name lingers"),
+        (33400, Some(Input::KnobCw), ""),
+        (33500, Some(Input::KnobCw), ""),
+        (33800, None, "settings: hosts, and how each is connected"),
+        (33810, Some(Input::KnobCw), ""),
+        (33850, None, "settings: device, wifi network"),
+        (33860, Some(Input::Right), ""),
+        (33890, None, "settings: device, its address"),
+        (33900, Some(Input::KnobPush), ""),
+        (34200, None, "rest: model tinted, context plain"),
     ];
     let row = |show, style| Row { show, style };
     let card_variants = [
@@ -206,18 +243,18 @@ fn dump() {
             write_ppm(&frame, &format!("{dir}/frame-{t:05}.ppm"));
         }
     };
-    ui.set_power(Power { percent: Some(87), millivolts: Some(4160), on_usb: Some(true) }, 29_000);
-    ui.set_power(Power { percent: Some(87), millivolts: Some(4050), on_usb: Some(false) }, 30_000);
-    shot(&mut ui, &world, 31_000, "battery notice: cable pulled");
-    ui.set_power(Power { percent: Some(9), millivolts: Some(3620), on_usb: Some(false) }, 35_000);
-    shot(&mut ui, &world, 36_000, "battery notice: fell under 10 %");
-    ui.set_power(Power { percent: Some(2), millivolts: Some(3540), on_usb: Some(false) }, 37_000);
-    ui.tick(&world, 37_000);
-    ui.tick(&world, 47_100);
-    shot(&mut ui, &world, 52_300, "cell under 3.55 V for 10 s: counting down to power-off");
-    ui.set_power(Power { percent: Some(3), millivolts: Some(3700), on_usb: Some(true) }, 53_000);
-    shot(&mut ui, &world, 53_500, "cable back in: countdown gone, charging notice");
-    let mut t = 60_000;
+    ui.set_power(Power { percent: Some(87), millivolts: Some(4160), on_usb: Some(true) }, 39_000);
+    ui.set_power(Power { percent: Some(87), millivolts: Some(4050), on_usb: Some(false) }, 40_000);
+    shot(&mut ui, &world, 41_000, "battery notice: cable pulled");
+    ui.set_power(Power { percent: Some(9), millivolts: Some(3620), on_usb: Some(false) }, 45_000);
+    shot(&mut ui, &world, 46_000, "battery notice: fell under 10 %");
+    ui.set_power(Power { percent: Some(2), millivolts: Some(3540), on_usb: Some(false) }, 47_000);
+    ui.tick(&world, 47_000);
+    ui.tick(&world, 57_100);
+    shot(&mut ui, &world, 62_300, "cell under 3.55 V for 10 s: counting down to power-off");
+    ui.set_power(Power { percent: Some(3), millivolts: Some(3700), on_usb: Some(true) }, 63_000);
+    shot(&mut ui, &world, 63_500, "cable back in: countdown gone, charging notice");
+    let mut t = 70_000;
     ui.input(&world, Input::KnobLong, t);
     for _ in 0..2 {
         t += 100;
@@ -242,7 +279,7 @@ fn dump() {
             world.agents[0].effort = Effort::XHigh;
         }
         // Late enough that the name flash from the focus change above is over.
-        let t = 70_000 + i as u64 * 100;
+        let t = 80_000 + i as u64 * 100;
         ui.tick(&world, t);
         ui.render(&world, t, &mut frame);
         println!("--- t={t} ms: {caption}\n{}", frame.to_ascii());

@@ -241,6 +241,7 @@ fn main() {
                 Intent::Focus(i) => (i, Action::Focus),
                 Intent::SetEffort { agent, effort } => (agent, Action::SetEffort { effort }),
                 Intent::SetModel { agent, model } => (agent, Action::SetModel { model }),
+                Intent::Run { agent, command } => (agent, Action::Run { command }),
             };
             eprintln!("intent: {action:?} on agent {index}");
             match owners.get(index) {
@@ -250,7 +251,8 @@ fn main() {
                     (Some(_), Action::Focus) => world.focused = index,
                     (Some(a), Action::SetEffort { effort }) => a.effort = effort,
                     (Some(a), Action::SetModel { model }) => a.model = model,
-                    (None, _) => {}
+                    // Nobody to run it.
+                    (Some(_), Action::Run { .. }) | (None, _) => {}
                 },
             }
         }

@@ -16,6 +16,8 @@
 //!   pixbar-bridge state [--socket PATH]                       print the agent list once, as the device would get it
 //!   pixbar-bridge set-effort PANE LEVEL [--socket PATH]       drive one session's picker directly (for testing)
 //!   pixbar-bridge set-model PANE MODEL [--socket PATH]          MODEL as the picker calls it: opus, sonnet, ...
+//!   pixbar-bridge menu PANE COMMAND [--socket PATH]             what the panel's menu does: compact, clear, rename,
+//!                                                              split_right, split_down, close_tab, close_pane
 
 mod adb;
 mod claude;
@@ -25,6 +27,7 @@ mod herdr;
 mod install;
 mod link;
 mod picker;
+mod prompt;
 mod server;
 mod usb;
 
@@ -44,7 +47,7 @@ use claude::Sessions;
 use herdr::{Herdr, PanelSort};
 use picker::{Change, Picker};
 use pixbar_proto::{decode, encode, Action, AgentState, FromDevice, ToDevice, BEACON_PORT, BEACON_PREFIX, DEFAULT_PORT, PROTO};
-use pixbar_render::{Agent, Effort, Model, Status};
+use pixbar_render::{Agent, Command, Effort, Model, Status};
 use serde_json::Value;
 
 /// Set by SIGTERM / SIGINT. A picker sequence under way backs out with Esc before the process goes.
@@ -214,6 +217,7 @@ fn execute(herdr: &Herdr, shared: &Mutex<Shared>, pane: &str, action: Action) {
         Action::Focus => herdr.focus(pane).map_err(|e| e.to_string()),
         Action::SetEffort { effort } => Picker { herdr, pane }.apply(Change::Effort(effort)),
         Action::SetModel { model } => Picker { herdr, pane }.apply(Change::Model(model)),
+        Action::Run { command } => run_command(herdr, pane, command),
     };
     match result {
         Ok(()) => {
@@ -232,6 +236,20 @@ fn execute(herdr: &Herdr, shared: &Mutex<Shared>, pane: &str, action: Action) {
         }
     }
     EXECUTING.store(false, Ordering::SeqCst);
+}
+
+/// What the panel's menu asks for: a slash command typed into the session, or a word with herdr about its pane.
+fn run_command(herdr: &Herdr, pane: &str, command: Command) -> Result<(), String> {
+    let herdrs = |done: std::io::Result<()>| done.map_err(|e| e.to_string());
+    match command {
+        Command::Compact => prompt::slash(herdr, pane, "/compact"),
+        Command::Clear => prompt::slash(herdr, pane, "/clear"),
+        Command::Rename => herdrs(herdr.ask_tab_name(pane)),
+        Command::SplitRight => herdrs(herdr.split(pane, "right")),
+        Command::SplitDown => herdrs(herdr.split(pane, "down")),
+        Command::CloseTab => herdrs(herdr.close_tab_of(pane)),
+        Command::ClosePane => herdrs(herdr.close_pane(pane)),
+    }
 }
 
 /// Logs `what` unless it was the last thing said: started at login, the bridge may wait hours for herdr, retrying
@@ -417,7 +435,7 @@ fn version() -> String {
 }
 
 const USAGE: &str = "usage: pixbar-bridge install [--no-service] [--no-statusline] | uninstall | doctor
-       pixbar-bridge run|deploy [IP|usb]|trust [IP|usb]|stock [IP|usb]|log [IP|usb]|shell IP|usb COMMAND|find|state|statusline|set-effort PANE LEVEL|set-model PANE MODEL  [--device IP[:PORT]|usb] [--socket PATH]
+       pixbar-bridge run|deploy [IP|usb]|trust [IP|usb]|stock [IP|usb]|log [IP|usb]|shell IP|usb COMMAND|find|state|statusline|set-effort PANE LEVEL|set-model PANE MODEL|menu PANE COMMAND|name-tab TAB PANE  [--device IP[:PORT]|usb] [--socket PATH]
        pixbar-bridge --version";
 
 /// One `run` per device argument: a second one would connect to the same panel, which lists every agent twice.
@@ -790,6 +808,27 @@ fn main() {
         }
         ["set-model", pane, model] => {
             execute(&herdr, &shared, pane, Action::SetModel { model: claude::model_named(model) });
+        }
+        // What RENAME TAB runs in the few lines it splits off: the name comes from whoever is at the keyboard.
+        ["name-tab", tab, from] => {
+            // Off with the command line that started this: what is left is the question.
+            print!("\x1b[2J\x1b[Hname for this tab (nothing: leave it): ");
+            let _ = std::io::stdout().flush();
+            let mut name = String::new();
+            let _ = std::io::stdin().read_line(&mut name);
+            let renamed = match name.trim() {
+                "" => Ok(()),
+                name => herdr.rename_tab(tab, name),
+            };
+            // Before this pane goes: herdr would hand the focus to a neighbour of its own choosing.
+            let _ = herdr.focus_pane(from);
+            renamed.unwrap_or_else(|e| fail(format!("herdr at {}: {e}", herdr.socket().display())));
+        }
+        ["menu", pane, command] => {
+            let Ok(command) = serde_json::from_value::<Command>(Value::String(command.to_string())) else {
+                fail("COMMAND is one of compact|clear|rename|split_right|split_down|close_tab|close_pane".into())
+            };
+            execute(&herdr, &shared, pane, Action::Run { command });
         }
         ["--version" | "-V" | "version"] => println!("pixbar-bridge {}", version()),
         ["--help" | "-h" | "help"] => println!("{USAGE}"),

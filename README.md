@@ -1,8 +1,8 @@
 # pixbar
 
 A Ulanzi TC002 ("Pixbar", 52×16 LED matrix, knob + 3 buttons) as a hardware companion for [herdr](https://herdr.dev):
-see every Claude Code agent's status, switch between them with the knob, and change the focused session's effort
-level and model with the buttons.
+see every Claude Code agent's status, switch between them with the knob, change the focused session's effort
+level and model with the buttons, and compact, clear, split or close it from a menu.
 
 Not affiliated with, endorsed by or supported by Ulanzi or Anthropic. Ulanzi and TC002 are Ulanzi's names; Claude
 and Claude Code are Anthropic's. Nothing is flashed: the program runs from the panel's RAM in place of Ulanzi's
@@ -133,10 +133,33 @@ On another machine or network (macOS: rustup and the ARM target are all it needs
 | Input | Action |
 |---|---|
 | Knob | Focus the next / previous agent in herdr, like Tab. A fast spin only focuses where it stops. The agent's name stays up for the linger time (10 s) |
-| Knob push | While the name is up after a turn: back to the resting screen. Otherwise: jump to the next agent that needs you (blocked, then done) |
+| Knob push | While the name is up after a turn: back to the resting screen. Otherwise: the menu (below); again to close it |
 | Knob long-press | Settings (below) |
 | Left / right | Effort down / up: LOW · MED · HIGH · XHIGH · MAX · ULTRA (ultracode). Sent 0.7 s after the last press. Held down, a button repeats like a key (after 0.4 s, then every 0.15 s), here and in the settings; a repeat never counts as the confirming press of TURN OFF / STOCK FW |
 | Middle | The next model: Opus and Fable unless `~/.config/pixbar/models` says otherwise (see Models below). Shows its name with a `?` and the context that would be re-read uncached; press again within 4 s to send, leave it or press anything else to drop it. A session that has not replied yet since it started, was cleared or was compacted switches on one press |
+
+### Menu
+
+A carousel of icons, the one in the middle named underneath. It always opens on COMPACT, so a count of clicks
+always lands on the same entry.
+
+| Input | Action |
+|---|---|
+| Knob | Turn the carousel (it goes round) |
+| Middle | Do what is in the middle. CLOSE, CLEAR and COMPACT take a second press within 4 s: the first turns the icon red between two fuses that burn down; left, right or the knob drops it |
+| Left / right | The entry's other choice, where arrowheads beside the icon say there is one |
+| Knob push | Back to the resting screen. Left alone for 10 s the menu closes by itself; the long-press still opens the settings |
+
+| Entry | What happens |
+|---|---|
+| COMPACT / CLEAR | One entry, left / right between them. `/compact` or `/clear`, typed into the session and sent. Only into an empty prompt box: typed after a half-written prompt it would be sent along with it. Not while the agent is working (Claude Code would queue it and run it when the turn ends, on a reply nobody has read) or blocked on a prompt (the Enter would answer it). `/clear` leaves the old conversation on disk for `/resume` |
+| RENAME TAB | A new label for the agent's herdr tab, typed on the keyboard: a few lines open under the agent's pane and ask for it (herdr's own rename prompt cannot be opened from outside). Enter renames, Enter on nothing leaves the tab as it was; either way the lines go away again and the focus is back where it was |
+| SPLIT RIGHT / DOWN | A new herdr pane beside or under the agent's, in the same directory, with the focus |
+| CLOSE TAB / PANE | herdr closes the agent's tab with every pane in it, or its pane alone, and asks nothing: what runs there ends. The last pane takes its tab along, the last tab its space |
+
+What a session will not take right now is drawn dimmed and knocks when pressed; the bridge checks again on the
+screen itself before it types, and its log says why it refused. The menu stays with the agent it was opened on: if
+the focus moves from the keyboard meanwhile, it closes rather than point somewhere else.
 
 The left strip has one block per agent, coloured by status, in the order of herdr's agent panel (grouped by space,
 or by priority: its toggle is followed). Focus is brightness: the focused block is at full brightness, the
@@ -234,6 +257,7 @@ line there), a network that keeps its clients apart, a firewall that drops incom
 ```sh
 pixbar-bridge state                         # what the device would be told, once
 pixbar-bridge set-effort w1:p1 max          # drive one pane's picker directly (also set-model … opus|fable)
+pixbar-bridge menu w1:p1 split_right        # what the panel's menu does: compact clear rename split_right split_down close_tab close_pane
 pixbar-bridge log [IP|usb]                  # what the device program has logged since it started
 pixbar-bridge shell IP|usb 'ls /tmp'        # the panel's root shell (it has no sleep, grep, head or tail)
 pixbar-device --demo --log-input            # on the device: built-in agents, print raw knob/button events

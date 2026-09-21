@@ -5,11 +5,12 @@
 
 use crate::font::{BIG, SMALL};
 use crate::frame::{Frame, Rect, Rgb, H, W};
+use crate::menu::{draw_icon, ENTRIES, ICON};
 use crate::settings::{
     step, Blocks, HostPick, NameOf, Row, Settings, Show, Style, BRIGHTNESS_MIN, BRIGHTNESS_STEP, LINGER_CHOICES_S,
     REFRESH_CHOICES_MS,
 };
-use crate::state::{dollars_short, tokens_short, Agent, Effort, Model, Power, Status, World};
+use crate::state::{dollars_short, tokens_short, Agent, Command, Effort, Model, Power, Status, World};
 
 pub mod palette {
     use crate::frame::Rgb;
@@ -67,9 +68,6 @@ const TIGHT_SHADE: f32 = 0.7;
 const BLOCKED_BREATH_MS: u64 = 900;
 const DONE_BREATH_MS: u64 = 1800;
 
-/// After a knob push jumped to an agent: at least this long, and long enough to read a scrolling name once.
-/// After a turn the name stays for `Settings::linger_s`, or until the knob is pushed.
-const JUMP_LINGER_MS: u64 = 2000;
 /// A focus change this soon after a knob click is taken to be the knob's own, still on its way back from the host.
 const FOCUS_GRACE_MS: u64 = 1000;
 /// The host never followed the knob: stop showing an agent that is not the focused one.
@@ -89,6 +87,18 @@ const NAME_FLASH_MS: u64 = 2000;
 const OPTIMISTIC_TIMEOUT_MS: u64 = 5000;
 const KNOB_GLIDE_MS: u64 = 140;
 const FLIP_MS: u64 = 160;
+
+/// The menu: a carousel of icons across the main area and the panel's last column, 41 px, which three icons
+/// 16 px apart fill exactly. The one in the middle is what the middle button does.
+const MENU_CLIP: Rect = Rect { x0: MAIN.x0, y0: 0, x1: MAIN.x1 + 1, y1: 15 };
+const MENU_W: i32 = MAIN_W + 1;
+const MENU_PITCH: i32 = 16;
+const MENU_ICON_X: i32 = MAIN.x0 + MENU_PITCH;
+const MENU_LABEL_Y: i32 = 10;
+/// Left alone this long, the menu closes by itself, like the settings.
+const MENU_LINGER_MS: u64 = 10_000;
+/// How long what was just done stays up before the resting screen is back.
+const MENU_DONE_MS: u64 = 600;
 
 /// Rail geometry: round knob 7 px across. Five stops sit 8 px apart. With ultracode the five close up to
 /// 6 px and ultracode stands apart past a divider, the way Claude Code's own slider detaches it past `┆`.
@@ -144,6 +154,8 @@ pub enum Intent {
     Focus(usize),
     SetEffort { agent: usize, effort: Effort },
     SetModel { agent: usize, model: Model },
+    /// Picked from the menu.
+    Run { agent: usize, command: Command },
 }
 
 /// A connected host, for the HOSTS page: what it calls itself, and how it got here.
@@ -236,8 +248,7 @@ const INFO_LINGER_MS: u64 = 30_000;
 #[derive(Clone, Copy, Debug)]
 enum Overlay {
     None,
-    /// `jumped`: opened by a knob push (next agent that needs you) rather than by turning.
-    Picker { hover: usize, last_input: u64, dir: i32, sent: Option<usize>, jumped: bool },
+    Picker { hover: usize, last_input: u64, dir: i32, sent: Option<usize> },
     Effort {
         agent: usize,
         from: Effort,
@@ -252,6 +263,25 @@ enum Overlay {
     Model { agent: usize, target: Model, changed_at: u64, committed_at: Option<u64> },
     /// `paged`: the last input turned the page (knob) rather than changed the value (buttons).
     Settings { item: usize, last_input: u64, dir: i32, paged: bool, bump_at: Option<u64> },
+    Menu(Menu),
+}
+
+/// The menu a knob push opens on one agent: the knob turns the carousel, left / right step through an entry's
+/// choices where it has more than one, the middle button does it, a second push closes.
+#[derive(Clone, Copy, Debug)]
+struct Menu {
+    agent: usize,
+    entry: usize,
+    choice: usize,
+    last_input: u64,
+    /// When the carousel last turned, and which way: the icons slide.
+    turned_at: u64,
+    dir: i32,
+    /// The first press of an entry that takes two.
+    armed_at: Option<u64>,
+    /// Refused, or nothing to step through: a knock.
+    bump_at: Option<u64>,
+    sent_at: Option<u64>,
 }
 
 /// A change we have sent but the host has not confirmed yet; shown as if it had already happened.
@@ -286,7 +316,8 @@ pub struct Ui {
     /// (since, until): the label takes line 2 after focus moved without the knob.
     name_flash: Option<(u64, u64)>,
     reject_at: Option<u64>,
-    confirm_at: Option<u64>,
+    /// The agent a lingering name was dismissed on, and when: where the knob last sent the focus.
+    knob_focus: Option<(usize, u64)>,
 }
 
 impl Default for Ui {
@@ -314,7 +345,7 @@ impl Ui {
             last_focused: 0,
             name_flash: None,
             reject_at: None,
-            confirm_at: None,
+            knob_focus: None,
         }
     }
 
@@ -434,16 +465,24 @@ impl Ui {
     pub fn input(&mut self, world: &World, input: Input, now: u64) -> Option<Intent> {
         self.drop_stale_overlay(world);
         let intent = self.input_checked(world, input, now);
-        if let Overlay::Effort { agent, .. } | Overlay::Model { agent, .. } = self.overlay {
+        if let Some(agent) = self.overlay_agent() {
             self.overlay_who = world.agents.get(agent).map_or(0, who);
         }
         intent
     }
 
-    /// An effort or model overlay whose agent left the list, or is no longer the one at that position, is
-    /// closed without sending anything.
+    /// The agent an overlay is about, where it is about one.
+    fn overlay_agent(&self) -> Option<usize> {
+        match self.overlay {
+            Overlay::Effort { agent, .. } | Overlay::Model { agent, .. } | Overlay::Menu(Menu { agent, .. }) => Some(agent),
+            _ => None,
+        }
+    }
+
+    /// An effort, model or menu overlay whose agent left the list, or is no longer the one at that position,
+    /// is closed without sending anything.
     fn drop_stale_overlay(&mut self, world: &World) {
-        if let Overlay::Effort { agent, .. } | Overlay::Model { agent, .. } = self.overlay {
+        if let Some(agent) = self.overlay_agent() {
             if world.agents.get(agent).map(who) != Some(self.overlay_who) {
                 self.overlay = Overlay::None;
                 self.optimistic = self.optimistic.filter(|o| o.agent != agent);
@@ -469,6 +508,12 @@ impl Ui {
         if world.agents.is_empty() {
             return None;
         }
+        match self.overlay {
+            // What was picked is on its way; the panel is back to its usual self under the last of the show.
+            Overlay::Menu(Menu { sent_at: Some(_), .. }) => self.overlay = Overlay::None,
+            Overlay::Menu(menu) => return self.menu_input(world, menu, input, held, now),
+            _ => {}
+        }
         let focused = world.focused.min(world.agents.len() - 1);
         match input {
             Input::KnobLong | Input::LeftHeld | Input::RightHeld => None,
@@ -485,31 +530,37 @@ impl Ui {
                 // Mid-spin (or when the flush already used this call's intent) `tick` focuses once the knob rests.
                 let focus_now = !spinning && flushed.is_none();
                 let sent = if focus_now { Some(hover) } else { sent };
-                self.overlay = Overlay::Picker { hover, last_input: now, dir, sent, jumped: false };
+                self.overlay = Overlay::Picker { hover, last_input: now, dir, sent };
                 flushed.or(focus_now.then_some(Intent::Focus(hover)))
             }
-            // Push while the name lingers after a turn: "got it", back to the resting screen.
-            // Otherwise: jump to the next agent that needs you (blocked first, then done).
+            // Push while the name lingers after a turn: "got it", back to the resting screen. Mid-spin the agent
+            // under the knob gets the focus it was still owed.
+            // Otherwise: the menu. A change to the effort that was settling is sent first.
             Input::KnobPush => {
-                if let Overlay::Picker { hover, sent, jumped: false, .. } = self.overlay {
+                if let Overlay::Picker { hover, sent, .. } = self.overlay {
                     self.overlay = Overlay::None;
+                    self.knob_focus = (hover < world.agents.len()).then_some((hover, now));
                     return (sent != Some(hover) && hover < world.agents.len()).then_some(Intent::Focus(hover));
                 }
-                let n = world.agents.len();
-                let after = |want: Status| (1..=n).map(|k| (focused + k) % n).find(|&i| world.agents[i].status == want);
-                match after(Status::Blocked).or_else(|| after(Status::Done)) {
-                    Some(hover) => {
-                        let flushed = self.flush(world, now);
-                        self.confirm_at = Some(now);
-                        let sent = flushed.is_none().then_some(hover);
-                        self.overlay = Overlay::Picker { hover, last_input: now, dir: 1, sent, jumped: true };
-                        flushed.or(Some(Intent::Focus(hover)))
-                    }
-                    None => {
-                        self.reject_at = Some(now);
-                        None
-                    }
-                }
+                // Pushed again before the host has followed the knob: the menu is for the agent that was just
+                // dismissed, not for the one herdr still has.
+                let agent = match self.knob_focus {
+                    Some((asked, at)) if now.saturating_sub(at) < FOCUS_GRACE_MS && asked < world.agents.len() => asked,
+                    _ => focused,
+                };
+                let flushed = self.flush(world, now);
+                self.overlay = Overlay::Menu(Menu {
+                    agent,
+                    entry: 0,
+                    choice: 0,
+                    last_input: now,
+                    turned_at: 0,
+                    dir: 0,
+                    armed_at: None,
+                    bump_at: None,
+                    sent_at: None,
+                });
+                flushed
             }
             Input::Left | Input::Right => {
                 // Injecting keys into a pane that shows a permission prompt could answer it.
@@ -587,6 +638,50 @@ impl Ui {
         }
     }
 
+    /// While the menu is up nothing else is: the knob turns the carousel, a push closes it.
+    fn menu_input(&mut self, world: &World, menu: Menu, input: Input, held: bool, now: u64) -> Option<Intent> {
+        let entry = &ENTRIES[menu.entry];
+        let armed = menu.armed_at.is_some_and(|t| now.saturating_sub(t) < CONFIRM_WINDOW_MS);
+        // Whatever else is touched, a first press does not outlive it.
+        let mut next = Menu { last_input: now, armed_at: None, bump_at: None, ..menu };
+        let mut intent = None;
+        match input {
+            Input::KnobPush | Input::KnobLong => {
+                self.overlay = Overlay::None;
+                return None;
+            }
+            Input::KnobCw | Input::KnobCcw => {
+                let dir = if input == Input::KnobCw { 1 } else { -1 };
+                let entry = (menu.entry as i32 + dir).rem_euclid(ENTRIES.len() as i32) as usize;
+                next = Menu { entry, choice: 0, turned_at: now, dir, ..next };
+            }
+            // A button that is merely still down steps nothing: two choices would flicker back and forth.
+            Input::Left | Input::Right if held => return None,
+            Input::Left | Input::Right if armed => {}
+            Input::Left | Input::Right => {
+                let dir = if input == Input::Right { 1 } else { -1 };
+                match entry.choices.len() {
+                    1 => next = Menu { bump_at: Some(now), dir, ..next },
+                    n => next.choice = (menu.choice as i32 + dir).rem_euclid(n as i32) as usize,
+                }
+            }
+            Input::Middle => {
+                let command = entry.choices[menu.choice].command;
+                if !command.open_to(&world.agents[menu.agent]) {
+                    next = Menu { bump_at: Some(now), dir: 1, ..next };
+                } else if entry.confirm && !armed {
+                    next.armed_at = Some(now);
+                } else {
+                    next.sent_at = Some(now);
+                    intent = Some(Intent::Run { agent: menu.agent, command });
+                }
+            }
+            Input::LeftHeld | Input::RightHeld => return None,
+        }
+        self.overlay = Overlay::Menu(next);
+        intent
+    }
+
     fn tick_power(&mut self, now: u64) {
         if self.armed_at.is_some_and(|t| now.saturating_sub(t) >= CONFIRM_WINDOW_MS) {
             self.armed_at = None;
@@ -614,11 +709,18 @@ impl Ui {
         if world.focused != self.last_focused {
             self.last_focused = world.focused;
             // The knob's own focus change needs no announcement: the picker already shows the label.
-            let ours = matches!(self.overlay, Overlay::Picker { hover, last_input, .. }
-                if hover == world.focused || now.saturating_sub(last_input) < FOCUS_GRACE_MS);
+            let ours = match self.overlay {
+                Overlay::Picker { hover, last_input, .. } => {
+                    hover == world.focused || now.saturating_sub(last_input) < FOCUS_GRACE_MS
+                }
+                // A menu opened right after the knob: the focus the knob asked for arriving.
+                Overlay::Menu(Menu { agent, .. }) => agent == world.focused,
+                _ => false,
+            };
             if !ours {
-                // Focus moved from the keyboard: follow it, even out of a lingering picker.
-                if matches!(self.overlay, Overlay::Picker { .. }) {
+                // Focus moved from the keyboard: follow it, even out of a lingering picker. A menu closes too,
+                // rather than stay pointed at an agent nobody is looking at any more.
+                if matches!(self.overlay, Overlay::Picker { .. } | Overlay::Menu(_)) {
                     self.overlay = Overlay::None;
                 }
                 let pass = world.agents.get(world.focused).map_or(0, |a| marquee_pass_ms(&a.label(self.settings.name), MAIN_W));
@@ -643,19 +745,24 @@ impl Ui {
                 }
                 None
             }
-            Overlay::Picker { hover, last_input, dir, sent, jumped } => {
+            Overlay::Menu(menu) => {
+                let done = menu.sent_at.is_some_and(|t| now.saturating_sub(t) >= MENU_DONE_MS);
+                if done || now.saturating_sub(menu.last_input) >= MENU_LINGER_MS {
+                    self.overlay = Overlay::None;
+                } else if menu.armed_at.is_some_and(|t| now.saturating_sub(t) >= CONFIRM_WINDOW_MS) {
+                    self.overlay = Overlay::Menu(Menu { armed_at: None, ..menu });
+                }
+                None
+            }
+            Overlay::Picker { hover, last_input, dir, sent } => {
                 let idle = now.saturating_sub(last_input);
-                let linger = match world.agents.get(hover) {
-                    Some(a) if jumped => JUMP_LINGER_MS.max(marquee_pass_ms(&a.label(self.settings.name), MAIN_W)),
-                    Some(_) => self.settings.linger_s as u64 * 1000,
-                    None => 0,
-                };
+                let linger = if hover < world.agents.len() { self.settings.linger_s as u64 * 1000 } else { 0 };
                 let not_followed = sent == Some(hover) && world.focused != hover && idle >= FOCUS_GIVE_UP_MS;
                 if idle >= linger || not_followed {
                     self.overlay = Overlay::None;
                     None
                 } else if sent != Some(hover) && idle >= KNOB_SETTLE_MS {
-                    self.overlay = Overlay::Picker { hover, last_input, dir, sent: Some(hover), jumped };
+                    self.overlay = Overlay::Picker { hover, last_input, dir, sent: Some(hover) };
                     Some(Intent::Focus(hover))
                 } else {
                     None
@@ -726,6 +833,7 @@ impl Ui {
         f.reset_clip();
         let caret = match self.overlay {
             Overlay::Picker { hover, .. } if hover < world.agents.len() => hover,
+            Overlay::Menu(Menu { agent, .. }) if agent < world.agents.len() => agent,
             _ => world.focused,
         };
         self.draw_strip(world, caret, now, f);
@@ -747,9 +855,12 @@ impl Ui {
                     self.draw_picker(world, hover.min(world.agents.len() - 1), last_input, dir, now, f)
                 }
                 // `tick` closes an overlay whose agent is gone; a caller that renders first gets the rest screen.
-                Overlay::Effort { agent, .. } | Overlay::Model { agent, .. } if agent >= world.agents.len() => {
+                Overlay::Effort { agent, .. } | Overlay::Model { agent, .. } | Overlay::Menu(Menu { agent, .. })
+                    if agent >= world.agents.len() =>
+                {
                     self.draw_rest(world, focused, now, f)
                 }
+                Overlay::Menu(menu) => draw_menu(f, &world.agents[menu.agent], menu, now),
                 Overlay::Effort { target, from, moved_at, dir, bump_at, committed_at, agent, .. } => {
                     let hue = model_hue(self.model_of(world, agent));
                     let ultra_ok = world.agents[agent].ultra_ok || target == Effort::Ultra;
@@ -783,10 +894,7 @@ impl Ui {
                 Status::Unknown => UNKNOWN,
             };
             let shade = if gap == 0 && i != caret && (col + row) % 2 == 1 { TIGHT_SHADE } else { 1.0 };
-            let mut c = hue.scale(block_level(a.status, i == caret, now) * shade);
-            if i == caret && self.confirm_at.is_some_and(|t| now.saturating_sub(t) < 50) {
-                c = WHITE;
-            }
+            let c = hue.scale(block_level(a.status, i == caret, now) * shade);
             f.fill_rect(Rect { x0, y0, x1: x0 + size - 1, y1: y0 + size - 1 }, c);
         }
     }
@@ -1327,6 +1435,67 @@ fn draw_model(f: &mut Frame, target: Model, ctx_used: u32, changed_at: u64, comm
     if uw > 0 {
         f.fill_rect(Rect { x0: ux, y0: 14, x1: ux + uw - 1, y1: 15 }, if armed { hue.scale(0.5) } else { hue });
     }
+}
+
+/// The carousel. The entry in the middle is lit and named underneath; its neighbours wait dimmed at the sides
+/// and slide along with the knob. Armed, it stands alone in red between two fuses that burn down towards it.
+fn draw_menu(f: &mut Frame, agent: &Agent, menu: Menu, now: u64) {
+    f.set_clip(MENU_CLIP);
+    let n = ENTRIES.len() as i32;
+    let armed = menu.armed_at.map(|t| now.saturating_sub(t)).filter(|&t| t < CONFIRM_WINDOW_MS);
+    let sent = menu.sent_at.map(|t| now.saturating_sub(t));
+    let alone = armed.is_some() || sent.is_some();
+    let slide = slide_offset(now.saturating_sub(menu.turned_at), &[12, 8, 5, 3, 1, -1, 0]) * menu.dir;
+    let bump = menu.bump_at.map_or(0, |t| bump_offset(now.saturating_sub(t), menu.dir));
+    let entry = &ENTRIES[menu.entry];
+    let choice = &entry.choices[menu.choice];
+    let open = choice.command.open_to(agent);
+
+    for k in -2..=2 {
+        if alone && k != 0 {
+            continue;
+        }
+        let other = &ENTRIES[(menu.entry as i32 + k).rem_euclid(n) as usize];
+        let shown = if k == 0 { choice } else { &other.choices[0] };
+        let (icon, accent) = (shown.icon, shown.accent);
+        let x = MENU_ICON_X + k * MENU_PITCH + if alone { 0 } else { slide } + bump;
+        // Full in the middle, a quarter at the sides, and in between while it slides.
+        let away = ((x - MENU_ICON_X).abs() as f32 / MENU_PITCH as f32).min(1.0);
+        let level = if k == 0 && !open { DIM_STYLE_LEVEL } else { 1.0 - 0.75 * away };
+        draw_icon(f, icon, x, 0, |own| match (armed, sent) {
+            (Some(_), _) => RED,
+            (_, Some(t)) if t < 120 => Rgb(255, 255, 255),
+            _ => if own { accent } else { WHITE }.scale(level),
+        });
+    }
+
+    // Left / right have somewhere to go here.
+    if entry.choices.len() > 1 && !alone && slide == 0 {
+        for (dx, row) in [(0, 2), (1, 1), (2, 0)] {
+            for y in 4 - row..=4 + row {
+                f.set(MENU_ICON_X - 3 - dx, y, DIM);
+                f.set(MENU_ICON_X + ICON + 2 + dx, y, DIM);
+            }
+        }
+    }
+
+    let ink = match armed {
+        Some(t) if t % 600 >= 400 => Rgb::OFF,
+        Some(_) => RED,
+        None if open => WHITE,
+        None => DIM,
+    };
+    SMALL.draw(f, choice.label, MAIN.x0 + (MENU_W - SMALL.width(choice.label)) / 2 + bump, MENU_LABEL_Y, ink);
+
+    if let Some(t) = armed {
+        let reach = MENU_ICON_X - 2 - MAIN.x0;
+        let lit = (reach as f32 * (1.0 - t as f32 / CONFIRM_WINDOW_MS as f32)).round() as i32;
+        if lit > 0 {
+            f.fill_rect(Rect { x0: MENU_ICON_X - 2 - lit, y0: 4, x1: MENU_ICON_X - 3, y1: 4 }, RED);
+            f.fill_rect(Rect { x0: MENU_ICON_X + ICON + 2, y0: 4, x1: MENU_ICON_X + ICON + 1 + lit, y1: 4 }, RED);
+        }
+    }
+    f.set_clip(MAIN);
 }
 
 /// Hand-authored offsets, one per ~16 ms frame: at 5 px of travel a table beats an easing function.

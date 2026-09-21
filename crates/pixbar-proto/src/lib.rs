@@ -4,7 +4,7 @@
 //! Hosts push their agent list, the device pushes what the user asked for. Agents are addressed by the
 //! host's own id (the herdr pane id), never by list position, so a list that changed under a press is harmless.
 
-use pixbar_render::{Agent, Effort, Model};
+use pixbar_render::{Agent, Command, Effort, Model};
 use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_PORT: u16 = 17002;
@@ -12,7 +12,8 @@ pub const DEFAULT_PORT: u16 = 17002;
 /// status reads as unknown, an agent that does not parse is left out, an unknown message is logged), so the
 /// number is for telling a user why something is missing, not a gate.
 /// 2: models are names, agents carry `reported` / `has_effort` / `next_model`, the beacon carries the MAC.
-pub const PROTO: u32 = 2;
+/// 3: the menu's `run` action.
+pub const PROTO: u32 = 3;
 /// The device announces `PIXBAR <tcp-port> <mac>` here once a second; it has no mDNS and no resolver.
 pub const BEACON_PORT: u16 = 17003;
 pub const BEACON_PREFIX: &str = "PIXBAR";
@@ -42,6 +43,8 @@ pub enum Action {
     Focus,
     SetEffort { effort: Effort },
     SetModel { model: Model },
+    /// Picked from the panel's menu.
+    Run { command: Command },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -157,6 +160,10 @@ mod tests {
         let line = encode(&intent);
         assert_eq!(line.trim(), r#"{"type":"intent","id":"w7:p1","action":"set_effort","effort":"max"}"#);
         assert_eq!(decode::<FromDevice>(&line).unwrap(), intent);
+
+        let run = FromDevice::Intent { id: "w7:p1".into(), action: Action::Run { command: Command::SplitRight } };
+        assert_eq!(encode(&run).trim(), r#"{"type":"intent","id":"w7:p1","action":"run","command":"split_right"}"#);
+        assert_eq!(decode::<FromDevice>(&encode(&run)).unwrap(), run);
     }
 
     #[test]

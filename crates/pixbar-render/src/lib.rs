@@ -3,12 +3,13 @@
 
 pub mod font;
 pub mod frame;
+pub mod menu;
 pub mod settings;
 pub mod state;
 pub mod ui;
 
 pub use frame::{Frame, Rgb, H, W};
-pub use state::{Agent, Effort, Limit, Model, Power, Status, World};
+pub use state::{Agent, Command, Effort, Limit, Model, Power, Status, World};
 pub use settings::{Blocks, HostPick, NameOf, Row, Settings, Show, Style};
 pub use ui::{render_notice, DeviceAction, HostLink, Info, Input, Intent, Ui};
 
@@ -68,6 +69,10 @@ mod tests {
             assert!(crate::font::SMALL.covers(&cost), "SMALL lacks a glyph in {cost}");
         }
         assert!(crate::font::BIG.covers("abcdefghijklmnopqrstuvwxyz0123456789?"), "settings draw numbers in BIG");
+        for choice in crate::menu::ENTRIES.iter().flat_map(|e| e.choices) {
+            let w = crate::font::SMALL.width(choice.label);
+            assert!(crate::font::SMALL.covers(choice.label) && w <= 41, "{} is {w} px, the menu has 41", choice.label);
+        }
     }
 
     #[test]
@@ -211,14 +216,9 @@ mod tests {
     }
 
     #[test]
-    fn knob_push_jumps_to_the_agent_that_needs_you() {
-        let (w, mut ui) = (world(), Ui::new());
-        assert_eq!(ui.input(&w, Input::KnobPush, 0), Some(Intent::Focus(1)), "agent 1 is blocked");
-    }
-
-    #[test]
-    fn the_name_lingers_after_a_turn_until_the_knob_is_pushed() {
+    fn the_name_lingers_after_a_turn_and_the_panel_follows_a_focus_moved_from_the_keyboard() {
         let (mut w, mut ui) = (world(), Ui::new());
+        w.agents.push(w.agents[0].clone());
         let mut f = Frame::new();
         let picker_up = |ui: &Ui, w: &World, t: u64, f: &mut Frame| {
             ui.render(w, t, f);
@@ -234,21 +234,183 @@ mod tests {
 
         assert_eq!(ui.input(&w, Input::KnobCcw, 20_000), Some(Intent::Focus(0)));
         w.focused = 0;
-        assert_eq!(ui.input(&w, Input::KnobPush, 21_000), None, "push only dismisses; agent 1 is blocked but not jumped to");
-        assert!(!picker_up(&ui, &w, 21_000, &mut f));
-        assert_eq!(ui.input(&w, Input::KnobPush, 22_000), Some(Intent::Focus(1)), "at rest the push jumps again");
+        ui.tick(&w, 20_100);
+        w.focused = 2; // Tab in herdr, 5 s later
+        ui.tick(&w, 25_000);
+        assert!(!picker_up(&ui, &w, 25_000, &mut f), "the picker does not outlive a focus it did not ask for");
+    }
+
+    /// Where the carousel's middle icon sits, and a pixel that COMPACT's icon lights.
+    const MENU_ICON: (i32, i32) = (27, 0);
+    const COMPACT_STEM: (i32, i32) = (MENU_ICON.0 + 4, MENU_ICON.1);
+
+    #[test]
+    fn a_knob_push_opens_the_menu_and_the_middle_button_does_what_is_in_the_middle() {
+        let (mut w, mut ui) = (world(), Ui::new());
+        w.agents[1].status = Status::Working;
+        assert_eq!(ui.input(&w, Input::KnobPush, 0), None);
+        assert_eq!(ui.input(&w, Input::KnobCw, 100), None, "the knob turns the carousel now, not the focus");
+        assert_eq!(ui.input(&w, Input::Right, 300), None, "RENAME TAB has one choice: a knock, no effort rail");
+        assert_eq!(ui.input(&w, Input::KnobCw, 400), None);
+        assert_eq!(ui.input(&w, Input::Middle, 500), Some(Intent::Run { agent: 0, command: Command::SplitRight }));
+        assert_eq!(ui.tick(&w, 900), None);
+        assert_eq!(ui.tick(&w, 1200), None, "and the menu has closed behind it");
+        assert_eq!(ui.input(&w, Input::KnobCw, 1300), Some(Intent::Focus(1)), "knob is back to switching agents");
+        w.focused = 1;
+        ui.input(&w, Input::KnobPush, 1900); // the name is up: this push only puts it away
+
+        // Left / right step through an entry's choices; every opening starts from the same place.
+        ui.input(&w, Input::KnobPush, 2000);
+        for t in 1..=2 {
+            ui.input(&w, Input::KnobCw, 2000 + t * 10);
+        }
+        ui.input(&w, Input::Left, 2100);
+        ui.input(&w, Input::RightHeld, 2500);
+        assert_eq!(ui.input(&w, Input::Middle, 2600), Some(Intent::Run { agent: 1, command: Command::SplitDown }), "a held button steps nothing");
+        ui.input(&w, Input::KnobPush, 4000);
+        ui.input(&w, Input::KnobCcw, 4100);
+        ui.input(&w, Input::KnobCw, 4200);
+        ui.input(&w, Input::KnobCcw, 4300); // round the end to CLOSE
+        ui.input(&w, Input::Right, 4400);
+        ui.input(&w, Input::Middle, 4500);
+        assert_eq!(ui.input(&w, Input::Middle, 4600), Some(Intent::Run { agent: 1, command: Command::ClosePane }));
     }
 
     #[test]
-    fn focus_moved_from_the_keyboard_ends_a_lingering_picker() {
+    fn a_second_knob_push_closes_the_menu_and_left_alone_it_closes_itself() {
+        let (w, mut ui) = (world(), Ui::new());
+        let menu_up = |ui: &Ui, t: u64| {
+            let mut f = Frame::new();
+            ui.render(&w, t, &mut f);
+            f.get(COMPACT_STEM.0, COMPACT_STEM.1) != Rgb::OFF
+        };
+        assert!(!menu_up(&ui, 0));
+        ui.input(&w, Input::KnobPush, 0);
+        assert!(menu_up(&ui, 100));
+        ui.input(&w, Input::KnobPush, 200);
+        assert!(!menu_up(&ui, 300));
+        assert_eq!(ui.input(&w, Input::Right, 400), None);
+        assert_eq!(ui.tick(&w, 1200), Some(Intent::SetEffort { agent: 0, effort: Effort::Max }), "the buttons are the effort's again");
+
+        ui.input(&w, Input::KnobPush, 5000);
+        ui.tick(&w, 14_000);
+        assert!(menu_up(&ui, 14_000));
+        ui.tick(&w, 15_100);
+        assert!(!menu_up(&ui, 15_100), "10 s without a touch");
+
+        // Settings are a long press away from anywhere, the menu included.
+        ui.input(&w, Input::KnobPush, 20_000);
+        ui.input(&w, Input::KnobLong, 20_700);
+        ui.input(&w, Input::Right, 20_800);
+        assert_eq!(ui.settings.brightness, Settings::default().brightness + settings::BRIGHTNESS_STEP);
+    }
+
+    #[test]
+    fn what_cannot_be_taken_back_takes_a_second_press() {
         let (mut w, mut ui) = (world(), Ui::new());
-        w.agents.push(w.agents[0].clone());
-        ui.input(&w, Input::KnobCw, 0);
+        w.agents[0].status = Status::Idle;
+        ui.input(&w, Input::KnobPush, 0);
+        assert_eq!(ui.input(&w, Input::Middle, 100), None, "COMPACT: armed only");
+        let mut f = Frame::new();
+        ui.render(&w, 200, &mut f);
+        assert_eq!(f.get(COMPACT_STEM.0, COMPACT_STEM.1), crate::ui::palette::RED, "\n{}", f.to_ascii());
+        assert_eq!(f.get(MENU_ICON.0 - 16 + 4, 1), Rgb::OFF, "armed, it stands alone:\n{}", f.to_ascii());
+        assert_eq!(ui.tick(&w, 4200), None, "left alone, it lapses");
+        assert_eq!(ui.input(&w, Input::Middle, 4300), None, "and the next press arms again rather than sending");
+        assert_eq!(ui.input(&w, Input::Left, 4400), None, "left disarms");
+        assert_eq!(ui.input(&w, Input::Middle, 4500), None);
+        ui.input(&w, Input::KnobCw, 4600);
+        ui.input(&w, Input::KnobCcw, 4700);
+        assert_eq!(ui.input(&w, Input::Middle, 4800), None, "so does turning away and back");
+        assert_eq!(ui.input(&w, Input::Middle, 4900), Some(Intent::Run { agent: 0, command: Command::Compact }));
+
+        // CLEAR is COMPACT's other choice. Armed, left / right only disarm: what is confirmed is what was shown.
+        ui.input(&w, Input::KnobPush, 10_000);
+        ui.input(&w, Input::Right, 10_100);
+        assert_eq!(ui.input(&w, Input::Middle, 10_200), None);
+        assert_eq!(ui.input(&w, Input::Right, 10_300), None);
+        assert_eq!(ui.input(&w, Input::Middle, 10_400), None, "armed again, and still CLEAR");
+        assert_eq!(ui.input(&w, Input::Middle, 10_500), Some(Intent::Run { agent: 0, command: Command::Clear }));
+    }
+
+    #[test]
+    fn nothing_is_typed_into_a_session_that_would_take_it_wrongly_but_herdr_still_obeys() {
+        let (mut w, mut ui) = (world(), Ui::new());
+        w.focused = 1; // blocked on a prompt: an injected Enter would answer it
+        ui.input(&w, Input::KnobPush, 0);
+        for t in [100, 200, 300] {
+            assert_eq!(ui.input(&w, Input::Middle, t), None, "COMPACT knocks");
+        }
+        ui.input(&w, Input::KnobCcw, 400);
+        ui.input(&w, Input::Middle, 500);
+        assert_eq!(ui.input(&w, Input::Middle, 600), Some(Intent::Run { agent: 1, command: Command::CloseTab }), "closing it types nothing");
+
+        assert!(!Command::Clear.open_to(&w.agents[0]) && Command::Rename.open_to(&w.agents[0]), "mid-turn: no /clear");
+        (w.agents[0].status, w.agents[0].reported) = (Status::Idle, false);
+        assert!(!Command::Compact.open_to(&w.agents[0]) && Command::SplitRight.open_to(&w.agents[0]), "a session nobody reported on");
+    }
+
+    #[test]
+    fn the_menu_stays_with_the_agent_it_was_opened_on() {
+        let (mut w, mut ui) = (world(), Ui::new());
+        w.agents[1].status = Status::Idle;
+        w.agents.push(Agent { space: "docs".into(), status: Status::Idle, ..w.agents[0].clone() });
+        // While the name is up after a turn, a push puts it away (mid-spin, with the focus that was still owed).
+        // Pushed again before the host has followed, the menu is for the agent the knob stopped on.
+        assert_eq!(ui.input(&w, Input::KnobCw, 0), Some(Intent::Focus(1)));
+        assert_eq!(ui.input(&w, Input::KnobCw, 40), None);
+        assert_eq!(ui.input(&w, Input::KnobPush, 80), Some(Intent::Focus(2)), "dismissed: no menu yet");
+        assert_eq!(ui.input(&w, Input::KnobCw, 120), Some(Intent::Focus(1)), "the knob still switches agents");
+        assert_eq!(ui.input(&w, Input::KnobCw, 400), Some(Intent::Focus(2)));
+        assert_eq!(ui.input(&w, Input::KnobPush, 600), None, "sent already: the push only dismisses");
+        assert_eq!(ui.input(&w, Input::KnobPush, 700), None, "and the next one is the menu");
+        w.focused = 2;
+        assert_eq!(ui.tick(&w, 900), None, "the focus the knob asked for arriving closes nothing");
+        ui.input(&w, Input::Middle, 1000);
+        assert_eq!(ui.input(&w, Input::Middle, 1100), Some(Intent::Run { agent: 2, command: Command::Compact }));
+
+        // Focus moved from the keyboard while the menu is up: it closes rather than point somewhere else.
+        ui.input(&w, Input::KnobPush, 2000);
+        w.focused = 0;
+        ui.tick(&w, 2100);
+        assert_eq!(ui.input(&w, Input::KnobCw, 2200), Some(Intent::Focus(1)), "no menu left to turn");
+
+        // The list shifting under it closes it too: position 1 now holds a different session.
         w.focused = 1;
-        ui.tick(&w, 100);
-        w.focused = 2; // Tab in herdr, 5 s later
-        ui.tick(&w, 5000);
-        assert_eq!(ui.input(&w, Input::KnobPush, 5100), Some(Intent::Focus(1)), "no picker left to dismiss: push jumps");
+        ui.tick(&w, 3000);
+        ui.tick(&w, 13_000); // the name has lingered out
+        ui.input(&w, Input::KnobPush, 13_100);
+        ui.input(&w, Input::Middle, 13_200);
+        w.agents.remove(0);
+        w.focused = 0;
+        assert_eq!(ui.input(&w, Input::Middle, 13_300), None, "the second press reaches nobody");
+        assert_eq!(ui.tick(&w, 13_400), None);
+    }
+
+    #[test]
+    fn the_carousel_lights_the_middle_icon_and_names_it() {
+        let (mut w, mut ui) = (world(), Ui::new());
+        w.agents[0].status = Status::Idle;
+        let lum = |c: Rgb| c.0 as u32 + c.1 as u32 + c.2 as u32;
+        ui.input(&w, Input::KnobPush, 0);
+        let mut f = Frame::new();
+        ui.render(&w, 1000, &mut f);
+        let art = f.to_ascii();
+        // COMPACT in the middle, RENAME TAB's pencil waiting to its right, CLOSE (from the other end of the ring)
+        // to its left.
+        let (middle, right, left) = (f.get(COMPACT_STEM.0, 0), f.get(MENU_ICON.0 + 16 + 7, 0), f.get(MENU_ICON.0 - 16, 0));
+        assert_eq!(middle, crate::ui::palette::WHITE, "\n{art}");
+        assert!(lum(right) > 0 && lum(left) > 0 && 2 * lum(right) < lum(middle), "\n{art}");
+        assert!((0..16).all(|y| f.get(9, y) == Rgb::OFF && f.get(10, y) == Rgb::OFF), "the strip keeps its gap:\n{art}");
+        let mut expected = Frame::new();
+        let x = 11 + (41 - crate::font::SMALL.width("COMPACT")) / 2;
+        crate::font::SMALL.draw(&mut expected, "COMPACT", x, 10, crate::ui::palette::WHITE);
+        assert!((10..16).all(|y| (11..52).all(|x| f.get(x, y) == expected.get(x, y))), "\n{art}");
+
+        // What this session will not take is drawn dimmed before anyone presses.
+        w.agents[0].status = Status::Working;
+        ui.render(&w, 1000, &mut f);
+        assert!(2 * lum(f.get(COMPACT_STEM.0, 0)) < lum(middle), "\n{}", f.to_ascii());
     }
 
     #[test]

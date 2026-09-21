@@ -88,21 +88,35 @@ struct Keys {
     cancel: Vec<String>,
 }
 
+/// The key (or chord) for one of Claude Code's actions. `bindings`: the parsed keybindings file, or `Null`
+/// where there is none.
+fn binding(bindings: &serde_json::Value, context: &str, action: &str, default: &str) -> Result<Vec<String>, String> {
+    let Some(contexts) = bindings["bindings"].as_array() else { return Ok(vec![in_herdrs_words(default)]) };
+    let bound = contexts.iter().filter(|c| c["context"] == context).filter_map(|c| c["bindings"].as_object()).flatten();
+    let keys: Vec<&str> = bound.filter(|(_, a)| a.as_str() == Some(action)).map(|(k, _)| k.as_str()).collect();
+    // A file that does not mention the context at all leaves it as it was.
+    let mentioned = contexts.iter().any(|c| c["context"] == context);
+    match keys.iter().find(|k| **k == default).or(keys.first()) {
+        Some(k) => Ok(k.split_whitespace().map(in_herdrs_words).collect()),
+        None if !mentioned => Ok(vec![in_herdrs_words(default)]),
+        None => Err(format!("no key is bound to {action} in ~/.claude/keybindings.json, and the panel works Claude Code through its keys")),
+    }
+}
+
+fn bindings_file() -> serde_json::Value {
+    let file = crate::install::claude_dir().map(|d| d.join("keybindings.json"));
+    let text = file.and_then(|f| std::fs::read_to_string(f).ok());
+    text.and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(serde_json::Value::Null)
+}
+
+/// As the user has it bound right now.
+pub fn key_for(context: &str, action: &str, default: &str) -> Result<Vec<String>, String> {
+    binding(&bindings_file(), context, action, default)
+}
+
 impl Keys {
-    /// `bindings`: the parsed keybindings file, or `Null` where there is none.
     fn from(bindings: &serde_json::Value) -> Result<Keys, String> {
-        let key = |context: &str, action: &str, default: &str| -> Result<Vec<String>, String> {
-            let Some(contexts) = bindings["bindings"].as_array() else { return Ok(vec![in_herdrs_words(default)]) };
-            let bound = contexts.iter().filter(|c| c["context"] == context).filter_map(|c| c["bindings"].as_object()).flatten();
-            let keys: Vec<&str> = bound.filter(|(_, a)| a.as_str() == Some(action)).map(|(k, _)| k.as_str()).collect();
-            // A file that does not mention the context at all leaves it as it was.
-            let mentioned = contexts.iter().any(|c| c["context"] == context);
-            match keys.iter().find(|k| **k == default).or(keys.first()) {
-                Some(k) => Ok(k.split_whitespace().map(in_herdrs_words).collect()),
-                None if !mentioned => Ok(vec![in_herdrs_words(default)]),
-                None => Err(format!("no key is bound to {action} in ~/.claude/keybindings.json, and the panel works Claude Code through its keys")),
-            }
-        };
+        let key = |context: &str, action: &str, default: &str| binding(bindings, context, action, default);
         Ok(Keys {
             open: key("Chat", "chat:modelPicker", "meta+p")?,
             less: key("ModelPicker", "modelPicker:decreaseEffort", "left")?,
@@ -114,9 +128,7 @@ impl Keys {
     }
 
     fn load() -> Result<Keys, String> {
-        let file = crate::install::claude_dir().map(|d| d.join("keybindings.json"));
-        let text = file.and_then(|f| std::fs::read_to_string(f).ok());
-        Keys::from(&text.and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(serde_json::Value::Null))
+        Keys::from(&bindings_file())
     }
 }
 

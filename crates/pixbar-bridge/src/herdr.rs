@@ -139,6 +139,61 @@ impl Herdr {
         self.request("pane.send_keys", json!({ "pane_id": pane, "keys": keys })).map(drop)
     }
 
+    /// Literal text, as if pasted: no key names are read into it.
+    pub fn send_text(&self, pane: &str, text: &str) -> io::Result<()> {
+        self.request("pane.send_text", json!({ "pane_id": pane, "text": text })).map(drop)
+    }
+
+    /// A new pane to the `right` of this one or `down` under it, in the same directory. The focus goes with it:
+    /// whoever splits wants to type there.
+    pub fn split(&self, pane: &str, direction: &str) -> io::Result<()> {
+        self.request("pane.split", json!({ "target_pane_id": pane, "direction": direction, "focus": true })).map(drop)
+    }
+
+    pub fn tab_of(&self, pane: &str) -> io::Result<String> {
+        let info = self.request("pane.get", json!({ "pane_id": pane }))?;
+        info["pane"]["tab_id"].as_str().map(str::to_string).ok_or_else(|| io::Error::other("pane.get names no tab"))
+    }
+
+    /// Any pane, agent or not.
+    pub fn focus_pane(&self, pane: &str) -> io::Result<()> {
+        self.request("pane.focus", json!({ "pane_id": pane })).map(drop)
+    }
+
+    pub fn rename_tab(&self, tab: &str, label: &str) -> io::Result<()> {
+        self.request("tab.rename", json!({ "tab_id": tab, "label": label })).map(drop)
+    }
+
+    /// Asks the keyboard for a new name for this pane's tab. herdr's own rename prompt cannot be opened from
+    /// outside (every rename call wants the name, and keys sent to a pane reach its program, not herdr), so the
+    /// question is put in a few lines split off under the pane: `pixbar-bridge name-tab` asks there, renames,
+    /// hands the focus back to the pane it came from, and the shell's `exit` takes the asking pane away again.
+    pub fn ask_tab_name(&self, pane: &str) -> io::Result<()> {
+        let tab = self.tab_of(pane)?;
+        let split = json!({ "target_pane_id": pane, "direction": "down", "focus": true, "ratio": 0.85 });
+        let asking = self.request("pane.split", split)?["pane"]["pane_id"].as_str().unwrap_or_default().to_string();
+        // Once the shell has drawn its prompt. (Typed earlier it would still arrive, but some prompts eat it.)
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while self.screen(&asking).is_ok_and(|s| s.trim().is_empty()) && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let me = std::env::current_exe()?;
+        // The leading space keeps it out of the history of shells that are set up that way.
+        self.send_text(&asking, &format!(" {} name-tab {tab} {pane}; exit", me.display()))?;
+        self.send_keys(&asking, &["enter"])
+    }
+
+    /// herdr asks nothing: the pane and what runs in it are gone. The last pane takes its tab with it, the last
+    /// tab its space.
+    pub fn close_pane(&self, pane: &str) -> io::Result<()> {
+        self.request("pane.close", json!({ "pane_id": pane })).map(drop)
+    }
+
+    /// The tab this pane is in, with every pane in it.
+    pub fn close_tab_of(&self, pane: &str) -> io::Result<()> {
+        self.request("tab.close", json!({ "tab_id": self.tab_of(pane)? })).map(drop)
+    }
+
     pub fn screen(&self, pane: &str) -> io::Result<String> {
         let r = self.request("pane.read", json!({ "pane_id": pane, "source": "visible" }))?;
         Ok(r["read"]["text"].as_str().or(r["text"].as_str()).unwrap_or_default().to_string())
