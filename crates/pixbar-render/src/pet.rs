@@ -676,7 +676,7 @@ fn balloon(f: &mut Frame, room: &Room, e: Emote, (left, right): (i32, i32), y: i
             aired(f, sx, y - 1 + dy, BLUE);
             aired(f, sx, y + dy, BLUE);
         }
-        Emote::Zzz => zzz(f, room, ex - 3, y + 1, age),
+        Emote::Zzz => zzz(f, room, (left, right), y, age),
         Emote::Stars => {
             let (cx, r) = ((left + ex - 1) / 2, (ex - 1 - left) as f32 / 2.0);
             for k in 0..2 {
@@ -687,10 +687,15 @@ fn balloon(f: &mut Frame, room: &Room, e: Emote, (left, right): (i32, i32), y: i
     }
 }
 
-/// Zs rising from (x, y), one after another, drifting right, or left where the panel ends; a Z that would run
-/// into the text is not drawn at all rather than in pieces.
-fn zzz(f: &mut Frame, room: &Room, x: i32, y: i32, age: u64) {
-    let (x, drift) = if x + 5 < W as i32 { (x, 1) } else { (x - 2, -1) };
+/// Zs rising off the top of a head that spans columns `left` to `right` and whose top row is `y`, one after another,
+/// floating away from it along the first way that is dark all the way up: from over its right shoulder up and to
+/// the right, from over its left shoulder up and to the left, or straight up off the top of its head. A Z that
+/// would still run into the text (it moved since) is not drawn at all rather than in pieces.
+fn zzz(f: &mut Frame, room: &Room, (left, right): (i32, i32), y: i32, age: u64) {
+    let z = |x: i32, drift: i32, rise: i32| [(0, 0), (1, 0), (1, 1), (0, 2), (1, 2)].map(|(dx, dy)| (x + drift * rise + dx, y - 3 - rise + dy));
+    let clear = |&(x, drift): &(i32, i32)| (0..4).all(|rise| z(x, drift, rise).iter().all(|&p| room.roomy(p)));
+    let over = (left + right) / 2;
+    let (x, drift) = [(right - 1, 1), (left, -1), (over, 0)].into_iter().find(clear).unwrap_or((over, 0));
     for k in 0..2u64 {
         if age < k * 1200 {
             continue;
@@ -698,7 +703,7 @@ fn zzz(f: &mut Frame, room: &Room, x: i32, y: i32, age: u64) {
         let t = (age - k * 1200) % 2400;
         let rise = (t / 600) as i32;
         let c = LAVENDER.scale(1.0 - t as f32 / 2400.0 * 0.6);
-        let z = [(0, 0), (1, 0), (1, 1), (0, 2), (1, 2)].map(|(dx, dy)| (x + drift * rise + dx, y - 2 - rise + dy));
+        let z = z(x, drift, rise);
         if z.iter().all(|&p| room.roomy(p)) {
             for (zx, zy) in z {
                 put(f, zx, zy, c);
@@ -831,6 +836,37 @@ mod tests {
         room.0[(y - 2) as usize] = u64::MAX;
         run(&mut p, &room, cue(Status::Blocked, 50_000), t, t + 10_000);
         assert_eq!((p.x, p.y), (x, y));
+    }
+
+    /// Its Zs float up off its head and away from it, the first way that is dark all the way: to the right where
+    /// there is room, to the left where it sleeps against the panel's right edge, straight up where text hems it in
+    /// on that side too. Never towards it, never from the far side of its body, never popping in and out.
+    #[test]
+    fn zs_float_up_and_away_from_the_head() {
+        let mut hemmed = Room::default();
+        for row in &mut hemmed.0[9..14] {
+            *row |= ((1u64 << 40) - 1) & !((1u64 << 29) - 1); // `12%` in columns 29..=39
+        }
+        let top = 13;
+        for (room, left, right, away) in [(Room::default(), 30, 41, 1), (Room::default(), 40, 51, -1), (hemmed, 40, 51, 0)] {
+            let lit = |age: u64| {
+                let mut f = Frame::new();
+                balloon(&mut f, &room, Emote::Zzz, (left, right), top, age, age);
+                (0..H as i32).flat_map(|y| (0..W as i32).map(move |x| (x, y))).filter(|&(x, y)| f.get(x, y) != Rgb::OFF).collect::<Vec<_>>()
+            };
+            let mean = |ps: &[(i32, i32)]| ps.iter().map(|p| p.0).sum::<i32>() as f32 / ps.len().max(1) as f32;
+            for age in [100, 700, 1100] {
+                let ps = lit(age);
+                assert!(!ps.is_empty(), "no Z at {age} ms beside {left}..={right} (going {away})");
+                for &(x, y) in &ps {
+                    assert!(y < top && (left - 4..=right + 4).contains(&x), "a Z at ({x}, {y}) is not over the head at {left}..={right}");
+                }
+            }
+            // One Z on its way up (the second has not set off yet): away from the head, never towards it.
+            let (start, later) = (mean(&lit(100)), mean(&lit(1100)));
+            let went = if later > start + 0.1 { 1 } else if later < start - 0.1 { -1 } else { 0 };
+            assert_eq!(went, away, "the Z went from x {start} to {later}");
+        }
     }
 
     #[test]
