@@ -10,7 +10,7 @@
 //! with `PIXBAR_DUMP_DIR=<dir>` it also writes each frame as a colour PPM.
 //!
 //! `pixbar-sim --pet mint` starts with the dango in that colour (`mint`, `pink`, `peach`, `lemon`, `sky`, `lilac`).
-//! `pixbar-sim --showcase out.rgb` records the README's GIF, a scene per feature (`docs/gif.py` makes the GIF).
+//! `pixbar-sim --showcase DIR` records the README's GIFs, a scene per feature (`docs/gif.py` makes the GIFs).
 //! `pixbar-sim --reel mint out.rgb [tokens|name|cost|cards]` plays a scripted afternoon of the focused agent (working while its context grows and fills, blocked for long enough to
 //! get cross, done, compacted, idle, the focus moving away and back, working again) and writes every 40 ms frame to
 //! `out.rgb`, 52x16 RGB bytes each, for turning into a GIF.
@@ -371,7 +371,7 @@ fn reel(pet: Pet, out: &str, rows: Option<[Row; 2]>) {
     std::fs::write(out, bytes).expect("write reel");
 }
 
-/// Something that happens in a scene of the README's GIF.
+/// Something that happens in one of the README's GIFs.
 #[derive(Clone, Copy)]
 enum Beat {
     Press(Input),
@@ -381,10 +381,9 @@ enum Beat {
     Layout([Row; 2], Blocks),
 }
 
-/// One feature, shown for `ms`: its tab and caption in the GIF, the agents it starts with, and what happens.
+/// One feature, shown for `ms` in a GIF of its own (`name`): the agents it starts with, and what happens.
 struct Scene {
-    tab: &'static str,
-    caption: &'static str,
+    name: &'static str,
     ms: u64,
     pet: Pet,
     world: fn() -> World,
@@ -430,28 +429,29 @@ const fn row(show: Show, style: Style) -> Row {
 
 const DEFAULT_ROWS: [Row; 2] = [row(Show::Model, Style::Plain), row(Show::Context, Style::Plain)];
 const PET_ROWS: [Row; 2] = [row(Show::Model, Style::Plain), row(Show::Tokens, Style::Plain)];
+/// The strip in the README's GIFs: small blocks, spaced.
+const SMALL: Blocks = Blocks { size: 2, gap: true };
 const CHUNKY: Blocks = Blocks { size: 4, gap: true };
-const TINY: Blocks = Blocks { size: 2, gap: false };
+const MEDIUM_TOUCHING: Blocks = Blocks { size: 3, gap: false };
 
-/// The README's GIF: one scene per feature.
+/// The README's GIFs, one per feature.
 const SCENES: &[Scene] = &[
+    // Over to the next agent and back again, slowly: it ends where it starts, so it loops without a jump.
     Scene {
-        tab: "Agents",
-        caption: "Every agent at a glance. The knob switches between them.",
-        ms: 4_400,
+        name: "agents",
+        ms: 7_200,
         pet: Pet::Off,
         world: calm_world,
         beats: &[
-            (900, Beat::Press(Input::KnobCw)),
-            (1_900, Beat::Press(Input::KnobCw)),
-            (2_900, Beat::Press(Input::KnobCw)),
-            (3_700, Beat::Press(Input::KnobPush)),
+            (1_600, Beat::Press(Input::KnobCw)),
+            (3_000, Beat::Press(Input::KnobPush)),
+            (4_600, Beat::Press(Input::KnobCcw)),
+            (6_000, Beat::Press(Input::KnobPush)),
         ],
         drift: still,
     },
     Scene {
-        tab: "Live status",
-        caption: "Status, model, effort and context, live from Claude Code.",
+        name: "status",
         ms: 5_200,
         pet: Pet::Off,
         world: calm_world,
@@ -459,8 +459,7 @@ const SCENES: &[Scene] = &[
         drift: climbing,
     },
     Scene {
-        tab: "Effort & model",
-        caption: "Effort up and down, ultracode too. The middle button switches model.",
+        name: "effort-and-model",
         ms: 7_400,
         pet: Pet::Off,
         world: calm_world,
@@ -473,8 +472,7 @@ const SCENES: &[Scene] = &[
         drift: still,
     },
     Scene {
-        tab: "Quick actions",
-        caption: "Compact or clear, rename the tab, split, close: a push away.",
+        name: "quick-actions",
         ms: 5_600,
         pet: Pet::Off,
         world: calm_world_at_rest,
@@ -491,8 +489,7 @@ const SCENES: &[Scene] = &[
         drift: still,
     },
     Scene {
-        tab: "Customize",
-        caption: "Rows, styles, block sizes and more, set on the panel itself.",
+        name: "customize",
         ms: 6_200,
         pet: Pet::Off,
         world: calm_world,
@@ -507,13 +504,12 @@ const SCENES: &[Scene] = &[
             (2_500, Beat::Press(Input::Right)),
             (3_100, Beat::Press(Input::KnobPush)),
             (4_100, Beat::Layout([row(Show::Limit5h, Style::Card), row(Show::Cost, Style::Plain)], CHUNKY)),
-            (5_100, Beat::Layout([row(Show::Name, Style::Plain), row(Show::Tokens, Style::Tint)], TINY)),
+            (5_100, Beat::Layout([row(Show::Name, Style::Plain), row(Show::Tokens, Style::Tint)], MEDIUM_TOUCHING)),
         ],
         drift: still,
     },
     Scene {
-        tab: "Pet",
-        caption: "Bonus: a dango that lives in the dark and acts out the agent.",
+        name: "pet",
         ms: 10_400,
         pet: Pet::Mint,
         world: calm_world,
@@ -526,15 +522,16 @@ const SCENES: &[Scene] = &[
     },
 ];
 
-/// The README's GIF: `--showcase out.rgb` writes every 40 ms frame of every scene, 52x16 RGB bytes each, and
-/// `out.rgb.scenes`: for each scene the frame it starts on, its tab and its caption, a line each, tab-separated.
-fn showcase(out: &str) {
-    let (mut bytes, mut index, mut frames) = (Vec::new(), String::new(), 0);
+/// The README's GIFs: `--showcase DIR` writes, for every scene, `DIR/<name>.rgb`: every 40 ms frame of it, 52x16
+/// RGB bytes each.
+fn showcase(dir: &str) {
+    std::fs::create_dir_all(dir).expect("make the showcase directory");
     for scene in SCENES {
         let (mut world, mut ui, mut host, mut frame) = ((scene.world)(), Ui::new(), FakeHost::default(), Frame::new());
         ui.info = demo_info();
-        (ui.settings.pet, ui.settings.rows) = (scene.pet, if scene.pet == Pet::Off { DEFAULT_ROWS } else { PET_ROWS });
-        index.push_str(&format!("{frames}\t{}\t{}\n", scene.tab, scene.caption));
+        (ui.settings.pet, ui.settings.blocks) = (scene.pet, SMALL);
+        ui.settings.rows = if scene.pet == Pet::Off { DEFAULT_ROWS } else { PET_ROWS };
+        let mut bytes = Vec::new();
         let mut beats = scene.beats.iter().peekable();
         for t in (0..scene.ms).step_by(40) {
             while let Some(&(_, beat)) = beats.next_if(|(at, _)| *at <= t) {
@@ -555,11 +552,9 @@ fn showcase(out: &str) {
             }
             ui.render(&world, t, &mut frame);
             bytes.extend(frame.pixels().iter().flat_map(|p| [p.0, p.1, p.2]));
-            frames += 1;
         }
+        std::fs::write(format!("{dir}/{}.rgb", scene.name), bytes).expect("write a scene");
     }
-    std::fs::write(out, bytes).expect("write showcase");
-    std::fs::write(format!("{out}.scenes"), index).expect("write scenes");
 }
 
 fn main() {

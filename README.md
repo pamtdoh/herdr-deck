@@ -2,25 +2,56 @@
 
 **A little control panel for your Claude Code agents, on a 52×16 LED gadget.**
 
-<p align="center">
-  <img src="docs/pixbar.gif" width="600" alt="pixbar's features on the panel, one after another: the agents in the left strip and the knob switching between them, status and context live from Claude Code, effort and model from the buttons, the quick-action menu, customizing the screen, and the dango">
-</p>
-
 pixbar turns an Ulanzi TC002 ("Pixbar": 52×16 LEDs, a knob, three buttons) into a companion for the Claude Code
-agents you run in [herdr](https://herdr.dev).
+agents you run in [herdr](https://herdr.dev). Nothing is flashed: it runs from the panel's RAM, and switching the
+panel off and on brings Ulanzi's firmware back.
 
-- **Every agent at a glance.** One block per agent, coloured by status; the ones that need you (blocked, or done
-  and not looked at yet) breathe.
-- **Switch with the knob.** herdr's focus follows, like Tab.
-- **Effort and model from the buttons.** Low to max and ultracode; Opus ↔ Fable, or any models you list.
-- **A menu for the rest.** Compact or clear, rename the tab, split, close.
-- **The readouts you want.** Model and effort, context, the session's name, the account's 5-hour and 7-day usage,
-  cost.
-- **A dango**, if you like, that lives in the dark corners of the screen and acts out what the focused agent is
-  doing.
+## What it does
 
-Nothing is flashed: pixbar runs from the panel's RAM, and switching the panel off and on brings Ulanzi's firmware
-back.
+### See every agent at a glance
+
+One block per agent down the left, coloured by what it is doing: blue idle, orange working, red blocked, green
+done. Turn the knob and herdr's focus moves to the next one, like Tab; the panel shows its name, then its model,
+effort and context.
+
+<img src="docs/gifs/agents.gif" width="548" alt="The knob moving from one agent to the next and back: its name comes up, then its model, effort and context">
+
+### Follow them live
+
+Model, effort and context come straight from Claude Code as they change, so you watch the context climb while an
+agent works. The ones that need you, blocked or done and not looked at yet, breathe in the strip until you get to
+them.
+
+<img src="docs/gifs/status.gif" width="548" alt="The context climbing from 104K to 210K while the agent works; another agent turns red, blocked, and the first one green, done">
+
+### Change effort and model with a press
+
+Left and right step the effort from low to max and on to ultracode. The middle button switches between Opus and
+Fable, or whichever models you list; since a switch has the whole context read again, it asks for a second press
+first.
+
+<img src="docs/gifs/effort-and-model.gif" width="548" alt="The effort rail going up to MAX and on to ULTRA with its violet ripple, then a switch to Fable, asked and confirmed">
+
+### Quick actions from a menu
+
+Push the knob for a menu on the agent in front of you: compact or clear the conversation, rename its herdr tab,
+split its pane right or down, close the tab or the pane. What cannot be taken back asks for a second press.
+
+<img src="docs/gifs/quick-actions.gif" width="548" alt="The menu turning through compact, clear, rename tab, split right and down, and close tab, which turns red and waits for a second press">
+
+### Make it yours
+
+Pick what the two rows show (model and effort, context, the session's name, the account's 5-hour or 7-day usage,
+the cost), how each row is drawn, how big the blocks are and how bright, all in the settings on the panel itself.
+
+<img src="docs/gifs/customize.gif" width="548" alt="The settings screen trying the top row's styles live, then two other layouts: a usage card over the cost with big blocks, and a name over a tinted context with touching blocks">
+
+### Bonus: a pet
+
+Turn on the dango and it lives in the screen's dark corners, acting out the agent in front of you: humming while
+it works, munching as the context grows, startled when it is blocked, beaming when it is done, asleep when it idles.
+
+<img src="docs/gifs/pet.gif" width="548" alt="A small mint dango sliding beside the context, turning red and startled when the agent is blocked, lighting up when it is done, falling asleep when it idles">
 
 ## Requirements
 
