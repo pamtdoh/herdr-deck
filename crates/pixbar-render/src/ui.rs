@@ -6,6 +6,7 @@
 use crate::font::{BIG, SMALL};
 use crate::frame::{Frame, Rect, Rgb, H, W};
 use crate::menu::{draw_icon, ENTRIES, ICON};
+use crate::pet::{self, Cue, Pet, PetState, Room};
 use crate::settings::{
     step, Blocks, HostPick, NameOf, Row, Settings, Show, Style, BRIGHTNESS_MIN, BRIGHTNESS_STEP, LINGER_CHOICES_S,
     REFRESH_CHOICES_MS,
@@ -87,6 +88,9 @@ const NAME_FLASH_MS: u64 = 2000;
 const OPTIMISTIC_TIMEOUT_MS: u64 = 5000;
 const KNOB_GLIDE_MS: u64 = 140;
 const FLIP_MS: u64 = 160;
+
+/// The pet has the main area and the panel's last column.
+const PET_CLIP: Rect = Rect { x0: pet::LEFT, y0: 0, x1: W as i32 - 1, y1: H as i32 - 1 };
 
 /// The menu: a carousel of icons across the main area and the panel's last column, 41 px, which three icons
 /// 16 px apart fill exactly. The one in the middle is what the middle button does.
@@ -192,6 +196,8 @@ enum Item {
     Row(usize),
     Style(usize),
     Name,
+    /// Whether the dango lives in the black space of the resting screen, and in what colour.
+    Pet,
     Linger,
     Refresh,
     /// Which hosts are connected, and whose agents to show when there is more than one.
@@ -226,7 +232,7 @@ pub enum DeviceAction {
     Stock,
 }
 
-const ITEMS: [Item; 13] = [
+const ITEMS: [Item; 14] = [
     Item::Brightness,
     Item::Blocks,
     Item::Row(0),
@@ -234,6 +240,7 @@ const ITEMS: [Item; 13] = [
     Item::Row(1),
     Item::Style(1),
     Item::Name,
+    Item::Pet,
     Item::Linger,
     Item::Refresh,
     Item::Hosts,
@@ -242,7 +249,7 @@ const ITEMS: [Item; 13] = [
     Item::Action(DeviceAction::Stock),
 ];
 const SETTINGS_LINGER_MS: u64 = 10_000;
-/// The read-only pages are for reading, and may have a long line to scroll.
+/// The read-only pages are for reading, and may have a long line to scroll; the pet's page is for watching.
 const INFO_LINGER_MS: u64 = 30_000;
 
 #[derive(Clone, Copy, Debug)]
@@ -318,6 +325,7 @@ pub struct Ui {
     reject_at: Option<u64>,
     /// The agent a lingering name was dismissed on, and when: where the knob last sent the focus.
     knob_focus: Option<(usize, u64)>,
+    pub(crate) pet: PetState,
 }
 
 impl Default for Ui {
@@ -346,6 +354,7 @@ impl Ui {
             name_flash: None,
             reject_at: None,
             knob_focus: None,
+            pet: PetState::default(),
         }
     }
 
@@ -424,6 +433,7 @@ impl Ui {
             Item::Row(i) => s.rows[i].show = step(&Show::CHOICES, s.rows[i].show, dir, true),
             Item::Style(i) => s.rows[i].style = step(&Style::ALL.map(|s| s.0), s.rows[i].style, dir, true),
             Item::Name => s.name = step(&NameOf::ALL.map(|n| n.0), s.name, dir, true),
+            Item::Pet => s.pet = step(&Pet::ALL.map(|p| p.0), s.pet, dir, true),
             Item::Linger => s.linger_s = step(&LINGER_CHOICES_S, s.linger_s, dir, false),
             Item::Refresh => s.refresh_ms = step(&REFRESH_CHOICES_MS, s.refresh_ms, dir, false),
             // Every connected host, and ALL for the lot of them together.
@@ -733,6 +743,7 @@ impl Ui {
                 self.name_flash = Some((now, now + NAME_FLASH_MS.max(pass)));
             }
         }
+        self.tick_pet(world, now);
         if let Some(o) = self.optimistic {
             let confirmed = world.agents.get(o.agent).is_some_and(|a| {
                 o.effort.is_none_or(|e| e == a.effort) && o.model.is_none_or(|m| m == a.model)
@@ -744,7 +755,7 @@ impl Ui {
         match self.overlay {
             Overlay::None => None,
             Overlay::Settings { item, last_input, .. } => {
-                let reading = matches!(ITEMS[item], Item::Hosts | Item::Device);
+                let reading = matches!(ITEMS[item], Item::Hosts | Item::Device | Item::Pet);
                 let linger = if reading { INFO_LINGER_MS } else { SETTINGS_LINGER_MS };
                 if now.saturating_sub(last_input) >= linger {
                     self.overlay = Overlay::None;
@@ -798,6 +809,26 @@ impl Ui {
                 None
             }
         }
+    }
+
+    /// Whether the resting screen is what `render` shows: the one screen the pet lives on.
+    fn resting(&self, world: &World, now: u64) -> bool {
+        matches!(self.overlay, Overlay::None) && self.countdown_since.is_none() && !self.notice_up(now) && !world.agents.is_empty()
+    }
+
+    /// The pet moves through what the resting screen leaves dark, so it is shown that screen without itself.
+    /// Behind an overlay it waits where it was.
+    fn tick_pet(&mut self, world: &World, now: u64) {
+        if self.settings.pet == Pet::Off || !self.resting(world, now) {
+            return;
+        }
+        let focused = world.focused.min(world.agents.len() - 1);
+        let mut rest = Frame::new();
+        rest.set_clip(MAIN);
+        self.draw_rest(world, focused, now, &mut rest);
+        let a = &world.agents[focused];
+        let cue = Cue { status: a.status, ctx_used: a.ctx_used, ctx_pct: a.ctx_pct(), agent: who(a) };
+        self.pet.tick(true, &Room::of(&rest), cue, now);
     }
 
     /// The settings screen and the battery notices need no host and no agents; the device shows them even
@@ -856,7 +887,14 @@ impl Ui {
         } else {
             let focused = world.focused.min(world.agents.len() - 1);
             match self.overlay {
-                Overlay::None | Overlay::Settings { .. } => self.draw_rest(world, focused, now, f),
+                Overlay::None => {
+                    self.draw_rest(world, focused, now, f);
+                    if self.settings.pet != Pet::Off {
+                        f.set_clip(PET_CLIP);
+                        self.pet.draw(f, now, self.settings.pet.rgb());
+                    }
+                }
+                Overlay::Settings { .. } => self.draw_rest(world, focused, now, f),
                 Overlay::Picker { hover, last_input, dir, .. } => {
                     self.draw_picker(world, hover.min(world.agents.len() - 1), last_input, dir, now, f)
                 }
@@ -955,7 +993,7 @@ impl Ui {
         };
         match row.show {
             // Not known is not the same as a default: a session whose status line never reached the host.
-            Show::Model | Show::Context if !a.reported => {
+            Show::Model | Show::Context | Show::Tokens | Show::Percent if !a.reported => {
                 let tx = field(f, SMALL.width("--"), DIM);
                 SMALL.draw(f, "--", tx, y, ink(DIM));
             }
@@ -963,8 +1001,12 @@ impl Ui {
                 let effort = a.has_effort.then(|| self.effort_of(world, idx));
                 draw_model_effort(f, self.model_of(world, idx), effort, x, y, row.style, now)
             }
-            Show::Context => {
-                let s = format!("{} {}%", tokens_short(a.ctx_used), pct);
+            Show::Context | Show::Tokens | Show::Percent => {
+                let s = match row.show {
+                    Show::Tokens => tokens_short(a.ctx_used),
+                    Show::Percent => format!("{pct}%"),
+                    _ => format!("{} {}%", tokens_short(a.ctx_used), pct),
+                };
                 let tx = field(f, SMALL.width(&s), ctx_color);
                 SMALL.draw(f, &s, tx, y, ink(ctx_color));
             }
@@ -1024,6 +1066,7 @@ impl Ui {
             Item::Style(0) => "STYLE 1",
             Item::Style(_) => "STYLE 2",
             Item::Name => "NAME",
+            Item::Pet => "PET",
             Item::Linger => "LINGER",
             Item::Refresh => "REFRESH",
             Item::Hosts => "HOSTS",
@@ -1076,6 +1119,11 @@ impl Ui {
                     let label = world.agents[idx].label(s.name);
                     draw_marquee(f, &label, MAIN.x0 + slide + bump, LINE2_Y + dy, MAIN_W, WHITE, since);
                 }
+            }
+            Item::Pet => {
+                word_right(f, s.pet.word());
+                // On its own clock, so its gallery of faces starts from the first whenever the page comes up.
+                pet::preview(s.pet, f, MAIN.x0 + slide + bump, 16, since);
             }
             Item::Linger => drop(line2(f, &format!("{} SEC", s.linger_s))),
             Item::Refresh => drop(line2(f, &format!("{} SEC", s.refresh_ms as f32 / 1000.0))),

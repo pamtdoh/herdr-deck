@@ -4,12 +4,14 @@
 pub mod font;
 pub mod frame;
 pub mod menu;
+pub mod pet;
 pub mod settings;
 pub mod state;
 pub mod ui;
 
 pub use frame::{Frame, Rgb, H, W};
 pub use state::{Agent, Command, Effort, Limit, Model, Power, Status, World};
+pub use pet::Pet;
 pub use settings::{Blocks, HostPick, NameOf, Row, Settings, Show, Style};
 pub use ui::{render_notice, DeviceAction, HostLink, Info, Input, Intent, Ui};
 
@@ -611,12 +613,13 @@ mod tests {
             linger_s: 20,
             refresh_ms: 250,
             host: HostPick::new("DESKTOP"),
+            pet: Pet::Lilac,
         };
         assert_eq!(Settings::from_config(&s.to_config()), s);
         // No host picked is the default, and writes an empty value that reads back the same way.
         let all = Settings { host: HostPick::default(), ..s };
         assert!(all.host.is_all() && Settings::from_config(&all.to_config()) == all);
-        assert_eq!(Settings::from_config("brightness=250\nblocks=9\nrow1=clock\nrow2=name_pct\nlinger_s=7\nlayout=name\n"), Settings {
+        assert_eq!(Settings::from_config("brightness=250\nblocks=9\nrow1=clock\nrow2=name_pct\nlinger_s=7\nlayout=name\npet=dragon\n"), Settings {
             brightness: 100,
             ..Settings::default()
         });
@@ -668,6 +671,166 @@ mod tests {
         let mut expected = Frame::new();
         crate::font::SMALL.draw(&mut expected, "WEB-REPO", 11, 2, crate::ui::palette::WHITE);
         assert!((0..7).all(|y| (11..52).all(|x| f.get(x, y) == expected.get(x, y))), "name row shows the dir:\n{}", f.to_ascii());
+    }
+
+    /// Plays a minute of the focused agent working, blocked, done and idle, with and without a pet, and hands
+    /// each pair of frames to `check`, with the pet's side.
+    fn with_and_without(pet: Pet, rows: [Row; 2], mut check: impl FnMut(u64, Status, &Ui, &Frame, &Frame)) {
+        let mut w = world();
+        let (mut with, mut without) = (Ui::new(), Ui::new());
+        (with.settings.pet, with.settings.rows, without.settings.rows) = (pet, rows, rows);
+        let (mut a, mut b) = (Frame::new(), Frame::new());
+        for t in (0..64_000).step_by(40) {
+            let (status, used) = match t / 1000 {
+                0..=5 => (Status::Working, 12_000),
+                6..=19 => (Status::Working, 104_000),
+                20..=31 => (Status::Blocked, 104_000),
+                32..=43 => (Status::Done, 104_000),
+                _ => (Status::Idle, 104_000),
+            };
+            (w.agents[0].status, w.agents[0].ctx_used) = (status, used);
+            with.tick(&w, t);
+            without.tick(&w, t);
+            with.render(&w, t, &mut a);
+            without.render(&w, t, &mut b);
+            check(t, status, &with, &a, &b);
+        }
+    }
+
+    const LAYOUTS: [[Row; 2]; 4] = [
+        [Row { show: Show::Model, style: Style::Plain }, Row { show: Show::Context, style: Style::Plain }],
+        [Row { show: Show::Model, style: Style::Plain }, Row { show: Show::Tokens, style: Style::Plain }],
+        [Row { show: Show::Name, style: Style::Plain }, Row { show: Show::Model, style: Style::Plain }],
+        [Row { show: Show::Model, style: Style::Card }, Row { show: Show::Context, style: Style::Tint }],
+    ];
+
+    #[test]
+    fn the_pet_only_ever_lights_what_the_resting_screen_leaves_dark() {
+        let lit = |f: &Frame, x: i32, y: i32| f.get(x, y) != Rgb::OFF;
+        for pet in [Pet::Mint, Pet::Sky] {
+            for rows in LAYOUTS {
+                let mut seen = 0;
+                with_and_without(pet, rows, |t, _, _, with, without| {
+                    for (x, y) in (0..H as i32).flat_map(|y| (0..W as i32).map(move |x| (x, y))) {
+                        if lit(without, x, y) {
+                            assert_eq!(with.get(x, y), without.get(x, y), "{pet:?} drew over the text at {t} ms:\n{}", with.to_ascii());
+                        } else if lit(with, x, y) {
+                            seen += 1;
+                            assert!(x >= pet::LEFT, "{pet:?} in the strip at {t} ms:\n{}", with.to_ascii());
+                        }
+                    }
+                });
+                assert!(seen > 0, "{pet:?} never showed with {rows:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_walking_pet_keeps_a_pixel_of_air_from_the_text_except_underfoot() {
+        for (pet, rows) in [Pet::Mint, Pet::Lemon].into_iter().flat_map(|p| LAYOUTS.map(|r| (p, r))) {
+            with_and_without(pet, rows, |t, _, ui, with, without| {
+                let Some((bx, by, bw, bh)) = ui.pet.body() else { return };
+                for (x, y) in (by - 1..by + bh).flat_map(|y| (bx - 1..=bx + bw).map(move |x| (x, y))) {
+                    assert_eq!(without.get(x, y), Rgb::OFF, "text at ({x}, {y}) by {pet:?}'s box at ({bx}, {by}), {t} ms:\n{}", with.to_ascii());
+                }
+            });
+        }
+    }
+
+    #[test]
+    fn the_pet_page_turns_the_dango_on_in_a_colour_and_off_again() {
+        let w = world();
+        let mut ui = Ui::new();
+        ui.input(&w, Input::KnobLong, 0);
+        for k in 1..=7 {
+            ui.input(&w, Input::KnobCw, k * 10); // to PET
+        }
+        for k in 1..=5 {
+            ui.input(&w, Input::Right, 100 + k * 10); // off, mint, pink, peach, lemon, sky
+        }
+        assert_eq!(ui.settings.pet, Pet::Sky);
+        ui.input(&w, Input::KnobPush, 200);
+        assert_eq!(ui.take_settings_change().map(|s| s.pet), Some(Pet::Sky));
+        let shows = |ui: &mut Ui, from: u64| {
+            let mut f = Frame::new();
+            (from..from + 20_000).step_by(40).any(|t| {
+                ui.tick(&w, t);
+                ui.render(&w, t, &mut f);
+                (0..H as i32).any(|y| (0..W as i32).any(|x| f.get(x, y) == Pet::Sky.rgb()))
+            })
+        };
+        assert!(shows(&mut ui, 300), "the dango never showed in sky blue");
+        ui.settings.pet = Pet::Off;
+        assert!(!shows(&mut ui, 30_000), "switched off, it is gone");
+    }
+
+    #[test]
+    fn the_pet_page_plays_every_pets_faces() {
+        let w = world();
+        for pet in [Pet::Mint, Pet::Sky] {
+            let mut ui = Ui::new();
+            ui.settings.pet = pet;
+            ui.input(&w, Input::KnobLong, 0);
+            for k in 1..=7 {
+                ui.input(&w, Input::KnobCw, k * 10);
+            }
+            let mut f = Frame::new();
+            let mut lit = 0;
+            for t in (100..16_000).step_by(40) {
+                ui.render(&w, t, &mut f);
+                lit += (11..52).flat_map(|x| (8..16).map(move |y| (x, y))).filter(|&(x, y)| f.get(x, y) != Rgb::OFF).count();
+            }
+            assert!(lit > 0, "{pet:?} shows nothing on its page");
+        }
+    }
+
+    /// The pets may touch the text but never sit on it, and a balloon is whole or not there at all: nothing of
+    /// theirs is ever more than a pixel into what the text lights around it (a picture woven in between the
+    /// letters would be both broken and in the way).
+    #[test]
+    fn a_walking_pet_and_its_balloons_come_up_to_the_text_but_not_into_it() {
+        for (pet, rows) in [Pet::Mint, Pet::Lemon].into_iter().flat_map(|p| LAYOUTS.map(|r| (p, r))) {
+            with_and_without(pet, rows, |t, _, _, with, without| {
+                for (x, y) in (0..H as i32).flat_map(|y| (0..W as i32).map(move |x| (x, y))) {
+                    if with.get(x, y) == without.get(x, y) {
+                        continue;
+                    }
+                    // Lit on both sides, or above and below: in a gap inside the text.
+                    let lit = |dx: i32, dy: i32| without.get(x + dx, y + dy) != Rgb::OFF;
+                    let inside = lit(-1, 0) && lit(1, 0) || lit(0, -1) && lit(0, 1);
+                    assert!(!inside, "{pet:?} drew into the text at ({x}, {y}), {t} ms:\n{}", with.to_ascii());
+                }
+            });
+        }
+    }
+
+    #[test]
+    fn a_blocked_agents_pet_comes_into_view_flushed_and_stays_there() {
+        for pet in [Pet::Mint, Pet::Sky] {
+            let mut red = false;
+            with_and_without(pet, LAYOUTS[0], |t, status, _, with, without| {
+                if status == Status::Blocked && t >= 23_000 {
+                    let pixels = || (0..H as i32).flat_map(|y| (0..W as i32).map(move |x| (x, y)));
+                    let shown = pixels().any(|(x, y)| with.get(x, y) != without.get(x, y));
+                    assert!(shown, "{pet:?} out of sight at {t} ms while its agent is blocked");
+                    red |= pixels().any(|(x, y)| with.get(x, y) != without.get(x, y) && with.get(x, y).0 as u32 > 3 * with.get(x, y).2 as u32);
+                }
+            });
+            assert!(red, "{pet:?} never flushed red or put up a red balloon");
+        }
+    }
+
+    #[test]
+    fn a_row_can_show_the_context_as_tokens_or_as_a_percentage_alone() {
+        let (w, mut ui, mut f) = (world(), Ui::new(), Frame::new());
+        for (show, text) in [(Show::Tokens, "104K"), (Show::Percent, "10%")] {
+            ui.settings.rows[1] = Row { show, style: Style::Plain };
+            ui.render(&w, 5000, &mut f);
+            let mut expected = Frame::new();
+            crate::font::SMALL.draw(&mut expected, text, 11, 9, crate::ui::palette::WHITE);
+            assert!((8..16).all(|y| (11..52).all(|x| f.get(x, y) == expected.get(x, y))), "{text}\n{}", f.to_ascii());
+        }
+        assert_eq!(Settings::from_config(&ui.settings.to_config()), ui.settings);
     }
 
     #[test]

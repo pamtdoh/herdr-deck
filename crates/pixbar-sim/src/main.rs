@@ -8,11 +8,19 @@
 //!
 //! `pixbar-sim --dump` prints a scripted session as ASCII frames instead of opening a window;
 //! with `PIXBAR_DUMP_DIR=<dir>` it also writes each frame as a colour PPM.
+//!
+//! `pixbar-sim --pet mint` starts with the dango in that colour (`mint`, `pink`, `peach`, `lemon`, `sky`, `lilac`).
+//! `pixbar-sim --reel mint out.rgb [tokens|name|cost|cards]` plays a scripted afternoon of the focused agent (working while its context grows and fills, blocked for long enough to
+//! get cross, done, compacted, idle, the focus moving away and back, working again) and writes every 40 ms frame to
+//! `out.rgb`, 52x16 RGB bytes each, for turning into a GIF.
 
 use std::time::Instant;
 
 use minifb::{Key, KeyRepeat, Window, WindowOptions};
-use pixbar_render::{Agent, Command, Effort, Frame, HostLink, Info, Input, Intent, Limit, Model, Power, Row, Show, Status, Style, Ui, World, H, W};
+use pixbar_render::{
+    Agent, Command, Effort, Frame, HostLink, Info, Input, Intent, Limit, Model, Pet, Power, Row, Show, Status, Style, Ui, World,
+    H, W,
+};
 
 const CELL: usize = 16;
 /// Pretend round trip to herdr + Claude Code before a change shows up in the world state.
@@ -183,6 +191,8 @@ fn dump() {
         (32500, Some(Input::Right), ""),
         (32900, None, "settings: name = dir"),
         (33000, Some(Input::KnobCw), ""),
+        (33200, None, "settings: the pet (off)"),
+        (33250, Some(Input::KnobCw), ""),
         (33300, None, "settings: how long the name lingers"),
         (33400, Some(Input::KnobCw), ""),
         (33500, Some(Input::KnobCw), ""),
@@ -304,9 +314,72 @@ fn write_ppm(frame: &Frame, path: &str) {
     std::fs::write(path, out).expect("write ppm");
 }
 
+fn pet_arg(name: &str) -> Pet {
+    Pet::ALL.iter().find(|p| p.1 == name).map(|p| p.0).unwrap_or_else(|| panic!("no pet called {name}"))
+}
+
+/// What the first agent does over the reel, how full its context is, and which agent has the focus:
+/// (from ms, status, tokens, focused).
+const REEL: &[(u64, Status, u32, usize)] = &[
+    (0, Status::Working, 12_000, 0),
+    (5_000, Status::Working, 38_000, 0),
+    (10_000, Status::Working, 104_000, 0),
+    (16_000, Status::Working, 760_000, 0),
+    (22_000, Status::Working, 930_000, 0),
+    (28_000, Status::Blocked, 930_000, 0),
+    (54_000, Status::Done, 935_000, 0),
+    (64_000, Status::Working, 935_000, 0),
+    (68_000, Status::Working, 120_000, 0),
+    (74_000, Status::Idle, 120_000, 0),
+    (86_000, Status::Idle, 120_000, 2),
+    (90_000, Status::Idle, 120_000, 0),
+    (94_000, Status::Working, 124_000, 0),
+    (100_000, Status::Unknown, 124_000, 0),
+    (106_000, Status::Unknown, 124_000, 0),
+];
+
+fn reel(pet: Pet, out: &str, rows: Option<[Row; 2]>) {
+    let (mut world, mut ui, mut frame) = (demo_world(), Ui::new(), Frame::new());
+    ui.settings.pet = pet;
+    if let Some(rows) = rows {
+        ui.settings.rows = rows;
+    }
+    let mut bytes = Vec::new();
+    let end = REEL.last().unwrap().0;
+    for t in (0..end).step_by(40) {
+        let &(_, status, used, focused) = REEL.iter().rev().find(|r| r.0 <= t).unwrap();
+        (world.agents[0].status, world.agents[0].ctx_used, world.focused) = (status, used, focused);
+        ui.tick(&world, t);
+        ui.render(&world, t, &mut frame);
+        bytes.extend(frame.pixels().iter().flat_map(|p| [p.0, p.1, p.2]));
+    }
+    // And the settings page that picks it.
+    ui.input(&world, Input::KnobLong, end);
+    for k in 1..=7 {
+        ui.input(&world, Input::KnobCw, end + k * 10);
+    }
+    for t in (end + 1000..end + 16_000).step_by(40) {
+        ui.tick(&world, t);
+        ui.render(&world, t, &mut frame);
+        bytes.extend(frame.pixels().iter().flat_map(|p| [p.0, p.1, p.2]));
+    }
+    std::fs::write(out, bytes).expect("write reel");
+}
+
 fn main() {
-    if std::env::args().any(|a| a == "--dump") {
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--dump") {
         return dump();
+    }
+    if let Some(i) = args.iter().position(|a| a == "--reel") {
+        let rows = match args.get(i + 3).map(String::as_str) {
+            Some("tokens") => Some([Row { show: Show::Model, style: Style::Plain }, Row { show: Show::Tokens, style: Style::Plain }]),
+            Some("name") => Some([Row { show: Show::Name, style: Style::Plain }, Row { show: Show::Model, style: Style::Plain }]),
+            Some("cost") => Some([Row { show: Show::Cost, style: Style::Plain }, Row { show: Show::Context, style: Style::Plain }]),
+            Some("cards") => Some([Row { show: Show::Model, style: Style::Card }, Row { show: Show::Context, style: Style::Tint }]),
+            _ => None,
+        };
+        return reel(pet_arg(&args[i + 1]), &args[i + 2], rows);
     }
 
     let (ww, wh) = (W * CELL, H * CELL);
@@ -330,6 +403,9 @@ fn main() {
 
     let (mut world, mut ui, mut host, mut frame) = (demo_world(), Ui::new(), FakeHost::default(), Frame::new());
     ui.info = demo_info();
+    if let Some(i) = args.iter().position(|a| a == "--pet") {
+        ui.settings.pet = pet_arg(&args[i + 1]);
+    }
     let mut power = Power { percent: Some(87), millivolts: Some(4160), on_usb: Some(true) };
     ui.set_power(power, 0);
     let mut buf = vec![0u32; ww * wh];

@@ -1,5 +1,7 @@
 //! What the user can change on the panel itself (knob long-press), and the text form the device keeps it in.
 
+use crate::pet::Pet;
+
 /// The agent blocks in the left strip: smaller or touching blocks, more agents.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Blocks {
@@ -41,6 +43,10 @@ pub enum Show {
     Model,
     /// `104K 10%`
     Context,
+    /// `104K` alone, in the colour of the percentage: a shorter row, more room beside it.
+    Tokens,
+    /// `10%` alone.
+    Percent,
     Name,
     /// `5H 12% 3H`: the account's 5-hour usage window and how long until it starts over.
     Limit5h,
@@ -51,16 +57,19 @@ pub enum Show {
 }
 
 impl Show {
-    const ALL: [(Show, &'static str, &'static str); 6] = [
+    const ALL: [(Show, &'static str, &'static str); 8] = [
         (Show::Model, "model", "MODEL"),
         (Show::Context, "context", "CTX"),
+        (Show::Tokens, "tokens", "CTX K"),
+        (Show::Percent, "percent", "CTX %"),
         (Show::Name, "name", "NAME"),
         (Show::Limit5h, "limit5h", "5H"),
         (Show::Limit7d, "limit7d", "7D"),
         (Show::Cost, "cost", "COST"),
     ];
 
-    pub const CHOICES: [Show; 6] = [Show::Model, Show::Context, Show::Name, Show::Limit5h, Show::Limit7d, Show::Cost];
+    pub const CHOICES: [Show; 8] =
+        [Show::Model, Show::Context, Show::Tokens, Show::Percent, Show::Name, Show::Limit5h, Show::Limit7d, Show::Cost];
 
     pub fn word(self) -> &'static str {
         Show::ALL.iter().find(|s| s.0 == self).map_or("", |s| s.2)
@@ -183,6 +192,8 @@ pub struct Settings {
     pub refresh_ms: u16,
     /// Whose agents to show, when more than one machine is connected.
     pub host: HostPick,
+    /// Whether the dango lives in the resting screen's black space, and in what colour.
+    pub pet: Pet,
 }
 
 impl Default for Settings {
@@ -195,6 +206,7 @@ impl Default for Settings {
             linger_s: 10,
             refresh_ms: 1000,
             host: HostPick::default(),
+            pet: Pet::Off,
         }
     }
 }
@@ -212,8 +224,9 @@ impl Settings {
         let show = |s: Show| Show::ALL.iter().find(|x| x.0 == s).map_or("", |x| x.1);
         let style = |s: Style| Style::ALL.iter().find(|x| x.0 == s).map_or("", |x| x.1);
         let name = NameOf::ALL.iter().find(|n| n.0 == self.name).map_or("", |n| n.1);
+        let pet = Pet::ALL.iter().find(|p| p.0 == self.pet).map_or("", |p| p.1);
         format!(
-            "brightness={}\nblocks={}\nblocks_gap={}\nrow1={}\nrow1_style={}\nrow2={}\nrow2_style={}\nname={name}\nlinger_s={}\nrefresh_ms={}\nhost={}\n",
+            "brightness={}\nblocks={}\nblocks_gap={}\nrow1={}\nrow1_style={}\nrow2={}\nrow2_style={}\nname={name}\nlinger_s={}\nrefresh_ms={}\nhost={}\npet={pet}\n",
             self.brightness,
             self.blocks.size,
             self.blocks.gap as u8,
@@ -248,6 +261,7 @@ impl Settings {
                     s.refresh_ms = v.parse().ok().filter(|v| REFRESH_CHOICES_MS.contains(v)).unwrap_or(s.refresh_ms)
                 }
                 "host" => s.host = HostPick::new(v),
+                "pet" => s.pet = Pet::ALL.iter().find(|p| p.1 == v).map_or(s.pet, |p| p.0),
                 _ => {}
             }
         }
