@@ -1,8 +1,8 @@
-# pixbar
+# herdr-deck
 
 **A little control panel for your Claude Code agents, on a 52×16 LED gadget.**
 
-pixbar turns an Ulanzi TC002 ("Pixbar": 52×16 LEDs, a knob, three buttons) into a companion for the Claude Code
+herdr-deck turns an Ulanzi TC002 (sold as "Pixbar": 52×16 LEDs, a knob, three buttons) into a companion for the Claude Code
 agents you run in [herdr](https://herdr.dev). Nothing is flashed: it runs from the panel's RAM, and switching the
 panel off and on brings Ulanzi's firmware back.
 
@@ -12,17 +12,17 @@ panel off and on brings Ulanzi's firmware back.
 
 One block per agent down the left, coloured by what it is doing: blue idle, orange working, red blocked, green
 done. Turn the knob and herdr's focus moves to the next one, like Tab; the panel shows its name, then its model,
-effort and context.
+effort and context. It works the other way round too: move the focus in herdr and the panel follows.
 
-<img src="docs/gifs/agents.gif" width="548" alt="The knob moving from one agent to the next and back: its name comes up, then its model, effort and context">
+<img src="docs/gifs/agents.gif" width="652" alt="herdr above, the panel below. The knob turns to the next agent and herdr's focus follows to it; then the focus moves back in herdr from the keyboard and the panel follows">
 
 ### Follow them live
 
-Model, effort and context come straight from Claude Code as they change, so you watch the context climb while an
-agent works. The ones that need you, blocked or done and not looked at yet, breathe in the strip until you get to
-them.
+Model, effort and context come straight from Claude Code's status line as they change, so you watch the context
+climb while an agent works. The ones that need you, blocked or done and not looked at yet, breathe in the strip
+until you get to them.
 
-<img src="docs/gifs/status.gif" width="548" alt="The context climbing from 104K to 210K while the agent works; another agent turns red, blocked, and the first one green, done">
+<img src="docs/gifs/status.gif" width="652" alt="herdr above, the panel below. The context climbs on both while the agent works; another agent gets blocked, pink in herdr and red in the strip; the first finishes, green on both">
 
 ### Change effort and model with a press
 
@@ -30,28 +30,28 @@ Left and right step the effort from low to max and on to ultracode. The middle b
 Fable, or whichever models you list; since a switch has the whole context read again, it asks for a second press
 first.
 
-<img src="docs/gifs/effort-and-model.gif" width="548" alt="The effort rail going up to MAX and on to ULTRA with its violet ripple, then a switch to Fable, asked and confirmed">
+<img src="docs/gifs/effort-and-model.gif" width="652" alt="The effort rail going up to MAX and on to ULTRA with its violet ripple, then a switch to Fable, asked and confirmed">
 
 ### Quick actions from a menu
 
 Push the knob for a menu on the agent in front of you: compact or clear the conversation, rename its herdr tab,
 split its pane right or down, close the tab or the pane. What cannot be taken back asks for a second press.
 
-<img src="docs/gifs/quick-actions.gif" width="548" alt="The menu turning through compact, clear, rename tab, split right and down, and close tab, which turns red and waits for a second press">
+<img src="docs/gifs/quick-actions.gif" width="652" alt="The menu turning through compact, clear, rename tab, split right and down, and close tab, which turns red and waits for a second press">
 
 ### Make it yours
 
 Pick what the two rows show (model and effort, context, the session's name, the account's 5-hour or 7-day usage,
 the cost), how each row is drawn, how big the blocks are and how bright, all in the settings on the panel itself.
 
-<img src="docs/gifs/customize.gif" width="548" alt="The settings screen trying the top row's styles live, then two other layouts: a usage card over the cost with big blocks, and a name over a tinted context with touching blocks">
+<img src="docs/gifs/customize.gif" width="652" alt="The settings screen trying the top row's styles live, then two other layouts: a usage card over the cost with big blocks, and a name over a tinted context with touching blocks">
 
 ### Bonus: a pet
 
 Turn on the dango and it lives in the screen's dark corners, acting out the agent in front of you: humming while
 it works, munching as the context grows, startled when it is blocked, beaming when it is done, asleep when it idles.
 
-<img src="docs/gifs/pet.gif" width="548" alt="A small mint dango sliding beside the context, turning red and startled when the agent is blocked, lighting up when it is done, falling asleep when it idles">
+<img src="docs/gifs/pet.gif" width="652" alt="A small mint dango sliding beside the context, turning red and startled when the agent is blocked, lighting up when it is done, falling asleep when it idles">
 
 ## Requirements
 
@@ -69,7 +69,7 @@ pixbar-bridge deploy usb               # or: deploy <the panel's IP>. Once per p
 pixbar-bridge doctor                   # checks every link from Claude Code to the panel
 ```
 
-From then on, switching the panel on is all it takes: the service finds it and starts pixbar on it.
+From then on, switching the panel on is all it takes: the service finds it and starts herdr-deck on it.
 
 No panel yet? `cargo run -p pixbar-sim -- --pet mint` runs the whole thing in a window (up / down: knob, Enter:
 push, hold Enter: settings, left / right: effort, space: model, B: change the agent's status).
@@ -118,7 +118,7 @@ one per line.
 ## Credits
 
 How the panel's LEDs and its MCU are driven was worked out by the people behind
-[tc002-customisation](https://github.com/aquarat/tc002-customisation); pixbar uses those facts and none of their
+[tc002-customisation](https://github.com/aquarat/tc002-customisation); herdr-deck uses those facts and none of their
 code.
 
 Not affiliated with, endorsed by or supported by Ulanzi or Anthropic. Ulanzi and TC002 are Ulanzi's names; Claude

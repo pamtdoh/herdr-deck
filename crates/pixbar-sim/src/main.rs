@@ -304,6 +304,19 @@ fn dump() {
     }
 }
 
+/// An LED as bright as it looks rather than the value it was given: the panel's driver lifts anything lit into
+/// 50..=255 (it shows nothing below 50), and the eye sees light on a curve (gamma 2.2), so a block at a quarter of
+/// full brightness looks about two thirds as bright, not a quarter. Its hue is kept: lifted channel by channel,
+/// colours wash out on a screen far more than they do on the panel's LEDs.
+fn seen(led: pixbar_render::Rgb) -> [u8; 3] {
+    let top = led.0.max(led.1).max(led.2) as f32;
+    if top == 0.0 {
+        return [0, 0, 0];
+    }
+    let looks = 255.0 * ((50.0 + (top - 1.0) * 205.0 / 254.0) / 255.0).powf(1.0 / 2.2);
+    [led.0, led.1, led.2].map(|v| (v as f32 * looks / top).round() as u8)
+}
+
 /// Plain PPM at 12 px per LED with a 2 px dark gap, enough to judge colours and legibility.
 fn write_ppm(frame: &Frame, path: &str) {
     const S: usize = 12;
@@ -313,7 +326,7 @@ fn write_ppm(frame: &Frame, path: &str) {
             let led = frame.pixels()[(y / S) * W + x / S];
             let gap = x % S >= S - 2 || y % S >= S - 2;
             let off = led == pixbar_render::Rgb::OFF;
-            out.extend_from_slice(&if gap { [10, 10, 10] } else if off { [22, 22, 22] } else { [led.0, led.1, led.2] });
+            out.extend_from_slice(&if gap { [10, 10, 10] } else if off { [22, 22, 22] } else { seen(led) });
         }
     }
     std::fs::write(path, out).expect("write ppm");
@@ -375,6 +388,8 @@ fn reel(pet: Pet, out: &str, rows: Option<[Row; 2]>) {
 #[derive(Clone, Copy)]
 enum Beat {
     Press(Input),
+    /// The focus moved in herdr itself, from the keyboard: the panel follows.
+    Focus(usize),
     /// An agent's status changes.
     Status(usize, Status),
     /// The resting rows and the strip's blocks change, as if picked in the settings.
@@ -382,9 +397,11 @@ enum Beat {
 }
 
 /// One feature, shown for `ms` in a GIF of its own (`name`): the agents it starts with, and what happens.
+/// `herdr`: the GIF shows herdr above the panel, the two following each other.
 struct Scene {
     name: &'static str,
     ms: u64,
+    herdr: bool,
     pet: Pet,
     world: fn() -> World,
     beats: &'static [(u64, Beat)],
@@ -436,23 +453,25 @@ const MEDIUM_TOUCHING: Blocks = Blocks { size: 3, gap: false };
 
 /// The README's GIFs, one per feature.
 const SCENES: &[Scene] = &[
-    // Over to the next agent and back again, slowly: it ends where it starts, so it loops without a jump.
+    // The knob moves herdr's focus to the next agent; then the focus moves back in herdr, from the keyboard, and
+    // the panel follows. It ends where it starts, so it loops without a jump.
     Scene {
         name: "agents",
-        ms: 7_200,
+        ms: 8_400,
+        herdr: true,
         pet: Pet::Off,
         world: calm_world,
         beats: &[
             (1_600, Beat::Press(Input::KnobCw)),
-            (3_000, Beat::Press(Input::KnobPush)),
-            (4_600, Beat::Press(Input::KnobCcw)),
-            (6_000, Beat::Press(Input::KnobPush)),
+            (3_200, Beat::Press(Input::KnobPush)),
+            (4_800, Beat::Focus(0)),
         ],
         drift: still,
     },
     Scene {
         name: "status",
-        ms: 5_200,
+        ms: 6_000,
+        herdr: true,
         pet: Pet::Off,
         world: calm_world,
         beats: &[(1_800, Beat::Status(4, Status::Blocked)), (4_200, Beat::Status(0, Status::Done))],
@@ -461,6 +480,7 @@ const SCENES: &[Scene] = &[
     Scene {
         name: "effort-and-model",
         ms: 7_400,
+        herdr: false,
         pet: Pet::Off,
         world: calm_world,
         beats: &[
@@ -474,6 +494,7 @@ const SCENES: &[Scene] = &[
     Scene {
         name: "quick-actions",
         ms: 5_600,
+        herdr: false,
         pet: Pet::Off,
         world: calm_world_at_rest,
         beats: &[
@@ -491,6 +512,7 @@ const SCENES: &[Scene] = &[
     Scene {
         name: "customize",
         ms: 6_200,
+        herdr: false,
         pet: Pet::Off,
         world: calm_world,
         beats: &[
@@ -511,6 +533,7 @@ const SCENES: &[Scene] = &[
     Scene {
         name: "pet",
         ms: 10_400,
+        herdr: false,
         pet: Pet::Mint,
         world: calm_world,
         beats: &[
@@ -522,8 +545,32 @@ const SCENES: &[Scene] = &[
     },
 ];
 
+/// How herdr stands at one frame, as a line of JSON for `docs/gif.py` to draw herdr from: the focus, every agent,
+/// and what was last done and where (the knob or a button on the panel, the keyboard in herdr), for a moment after.
+fn herdr_state(world: &World, t: u64, last: Option<(&str, u64)>) -> String {
+    let agents: Vec<String> = world
+        .agents
+        .iter()
+        .map(|a| {
+            let status = format!("{:?}", a.status).to_lowercase();
+            format!(
+                r#"{{"space":"{}","tab":"{}","dir":"{}","status":"{status}","model":"{}","effort":"{}","used":{},"window":{}}}"#,
+                a.space,
+                a.tab,
+                a.dir,
+                a.model.word(),
+                a.effort.word(),
+                a.ctx_used,
+                a.ctx_window
+            )
+        })
+        .collect();
+    let cue = last.filter(|&(_, at)| t.saturating_sub(at) < 900).map_or("null".into(), |(what, _)| format!(r#""{what}""#));
+    format!(r#"{{"t":{t},"focused":{},"cue":{cue},"agents":[{}]}}"#, world.focused, agents.join(","))
+}
+
 /// The README's GIFs: `--showcase DIR` writes, for every scene, `DIR/<name>.rgb`: every 40 ms frame of it, 52x16
-/// RGB bytes each.
+/// RGB bytes each; and for a scene that shows herdr too, `DIR/<name>.jsonl`, how herdr stands at each frame.
 fn showcase(dir: &str) {
     std::fs::create_dir_all(dir).expect("make the showcase directory");
     for scene in SCENES {
@@ -531,15 +578,21 @@ fn showcase(dir: &str) {
         ui.info = demo_info();
         (ui.settings.pet, ui.settings.blocks) = (scene.pet, SMALL);
         ui.settings.rows = if scene.pet == Pet::Off { DEFAULT_ROWS } else { PET_ROWS };
-        let mut bytes = Vec::new();
+        let (mut bytes, mut states, mut last) = (Vec::new(), String::new(), None);
         let mut beats = scene.beats.iter().peekable();
         for t in (0..scene.ms).step_by(40) {
             while let Some(&(_, beat)) = beats.next_if(|(at, _)| *at <= t) {
                 match beat {
                     Beat::Press(input) => {
+                        let knob = matches!(input, Input::KnobCw | Input::KnobCcw | Input::KnobPush | Input::KnobLong);
+                        last = Some((if knob { "knob" } else { "button" }, t));
                         if let Some(intent) = ui.input(&world, input, t) {
                             host.send(intent, t);
                         }
+                    }
+                    Beat::Focus(agent) => {
+                        world.focused = agent;
+                        last = Some(("keyboard", t));
                     }
                     Beat::Status(agent, status) => world.agents[agent].status = status,
                     Beat::Layout(rows, blocks) => (ui.settings.rows, ui.settings.blocks) = (rows, blocks),
@@ -552,8 +605,15 @@ fn showcase(dir: &str) {
             }
             ui.render(&world, t, &mut frame);
             bytes.extend(frame.pixels().iter().flat_map(|p| [p.0, p.1, p.2]));
+            if scene.herdr {
+                states.push_str(&herdr_state(&world, t, last));
+                states.push('\n');
+            }
         }
         std::fs::write(format!("{dir}/{}.rgb", scene.name), bytes).expect("write a scene");
+        if scene.herdr {
+            std::fs::write(format!("{dir}/{}.jsonl", scene.name), states).expect("write herdr's side");
+        }
     }
 }
 
@@ -681,7 +741,8 @@ fn main() {
             let lit = if *led == pixbar_render::Rgb::OFF {
                 0x181818
             } else {
-                (led.0 as u32) << 16 | (led.1 as u32) << 8 | led.2 as u32
+                let [r, g, b] = seen(*led);
+                (r as u32) << 16 | (g as u32) << 8 | b as u32
             };
             for (m, on) in mask.iter().enumerate() {
                 buf[(py + m / CELL) * ww + px + m % CELL] = if *on { lit } else { 0x0c0c0c };

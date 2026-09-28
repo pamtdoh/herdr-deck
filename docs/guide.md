@@ -1,4 +1,4 @@
-# pixbar: the guide
+# herdr-deck: the guide
 
 Everything the [README](../README.md) leaves out: how it works, what `install` does, USB and networks, the controls
 and settings in full, models, what goes over the network, battery, going back, and what to do when something is off.
@@ -55,7 +55,7 @@ says which link is broken when one of them moves.
 ```sh
 cargo build --release                     # the bridge, with the device program inside it (rustup fetches the ARM target)
 target/release/pixbar-bridge install      # copy it to ~/.local/bin, hook the status line, start the service
-pixbar-bridge deploy [IP|usb]             # once per panel: start the pixbar program on it
+pixbar-bridge deploy [IP|usb]             # once per panel: start the herdr-deck program on it
 pixbar-bridge doctor                      # every link from Claude Code to the panel, checked
 ```
 
@@ -105,7 +105,7 @@ The bridge carries the device program inside it and speaks enough of the adb pro
 port 5555 asks for no key), so none of this needs adb installed:
 
 - `pixbar-bridge deploy [IP]` pushes the program and starts it, and remembers the device (by MAC, in `~/.config/pixbar/devices`).
-- `pixbar-bridge run` connects to a running pixbar, found by its beacon. The device runs the program from RAM, so after
+- `pixbar-bridge run` connects to a panel running herdr-deck, found by its beacon. The device runs the program from RAM, so after
   every power-up it is back on Ulanzi's firmware; when `run` hears a device it remembers in that state, it starts the
   program again by itself. A TC002 it has never deployed to is left alone. `run --device IP` names the device instead.
 - `pixbar-bridge stock [IP]` gives the panel back to Ulanzi's firmware, and so does STOCK FW in the panel's settings.
@@ -136,7 +136,7 @@ the host that owns the agent. The HOSTS settings page picks whose agents it show
   the cable once Ulanzi's app has joined the WiFi: about 20 s from power-up to a working panel, tested on Linux
   with and without an adb server. So: plug the cable in first, then switch the panel on. A panel that was
   switched on with no bridge listening stays invisible on the cable until it is switched off and on (or started
-  over WiFi once: the pixbar program keeps the port in device mode for as long as it runs).
+  over WiFi once: the herdr-deck program keeps the port in device mode for as long as it runs).
 - Linux gives whoever is logged in at the machine access to adb devices from systemd 258 on. On an older one, or
   for a service that runs with nobody logged in, the bridge names the udev rule that is missing.
 - macOS asks once whether pixbar-bridge may find devices on the local network (System Settings > Privacy &
@@ -257,7 +257,7 @@ without workflows) is not offered again.
   read off the network and forged by anyone on it, and the link is not encrypted. On a network you do not trust,
   use the USB cable, which involves no network at all.
 - The panel itself is open to its network, with or without this project: Ulanzi's firmware serves a root shell
-  (adb, port 5555) without a password on any WiFi it joins, and the pixbar program's port 17002 takes any host
+  (adb, port 5555) without a password on any WiFi it joins, and the herdr-deck program's port 17002 takes any host
   that connects and lists its agents. Keep the panel on a network you would plug an unpatched gadget into.
 
 ## Battery
@@ -309,7 +309,12 @@ effort buttons, space is the middle one, B cycles the focused agent's status, P 
 Without a window: `--dump` prints a scripted session as text frames, `--reel mint out.rgb` records the dango
 through an afternoon of its agent, and `--showcase DIR` records the README's GIFs, a scene per feature, which
 `python3 docs/gif.py DIR docs/gifs` (Pillow) turns into `docs/gifs/*.gif`. The scenes are `SCENES` in
-`crates/pixbar-sim/src/main.rs`.
+`crates/pixbar-sim/src/main.rs`; for the ones that show herdr above the panel it also writes herdr's state at every
+frame, from which `docs/gif.py` draws herdr (made-up agents; a monospace font such as Menlo or DejaVu Sans Mono).
+
+The window and the GIFs show the LEDs as bright as they look rather than the values they are given: the panel's
+driver lifts anything lit to at least a fifth of full drive, and the eye sees light on a curve, so a block at a
+quarter of full brightness looks about two thirds as bright.
 
 ## Where things came from
 
