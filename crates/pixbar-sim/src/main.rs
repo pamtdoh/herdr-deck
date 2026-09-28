@@ -10,6 +10,7 @@
 //! with `PIXBAR_DUMP_DIR=<dir>` it also writes each frame as a colour PPM.
 //!
 //! `pixbar-sim --pet mint` starts with the dango in that colour (`mint`, `pink`, `peach`, `lemon`, `sky`, `lilac`).
+//! `pixbar-sim --showcase out.rgb` records what the README's GIF shows (`docs/gif.py` makes the GIF of it).
 //! `pixbar-sim --reel mint out.rgb [tokens|name|cost|cards]` plays a scripted afternoon of the focused agent (working while its context grows and fills, blocked for long enough to
 //! get cross, done, compacted, idle, the focus moving away and back, working again) and writes every 40 ms frame to
 //! `out.rgb`, 52x16 RGB bytes each, for turning into a GIF.
@@ -366,8 +367,73 @@ fn reel(pet: Pet, out: &str, rows: Option<[Row; 2]>) {
     std::fs::write(out, bytes).expect("write reel");
 }
 
+/// What the README's GIF shows, as (from ms, what happens): an input, a change in the world, or nothing (it is
+/// only there so that the story reads top to bottom).
+enum Beat {
+    Press(Input),
+    /// The first agent's status and context.
+    First(Status, u32),
+    /// The focused agent's status.
+    Focused(Status),
+}
+
+const SHOWCASE: &[(u64, Beat)] = &[
+    // Resting on a working agent: the dango slides about beside the context, which grows.
+    (2_600, Beat::First(Status::Working, 118_000)),
+    // More effort, then ultracode, with its ripple.
+    (4_200, Beat::Press(Input::Right)),
+    (4_700, Beat::Press(Input::Right)),
+    // The other model: armed, then sent.
+    (8_200, Beat::Press(Input::Middle)),
+    (9_000, Beat::Press(Input::Middle)),
+    // The knob, to the agent that is blocked: the dango startles, then asks for you in red.
+    (11_000, Beat::Press(Input::KnobCw)),
+    (12_600, Beat::Press(Input::KnobPush)),
+    // The menu, turned twice and put away.
+    (15_400, Beat::Press(Input::KnobPush)),
+    (15_900, Beat::Press(Input::KnobCw)),
+    (17_100, Beat::Press(Input::KnobCw)),
+    (18_100, Beat::Press(Input::KnobPush)),
+    // The agent gets its answer and finishes: the dango lights up.
+    (19_000, Beat::Focused(Status::Done)),
+];
+const SHOWCASE_MS: u64 = 22_500;
+
+/// The README's GIF: `--showcase out.rgb` writes every 40 ms frame of `SHOWCASE`, 52x16 RGB bytes each.
+fn showcase(out: &str) {
+    let (mut world, mut ui, mut host, mut frame) = (demo_world(), Ui::new(), FakeHost::default(), Frame::new());
+    ui.info = demo_info();
+    ui.settings.pet = Pet::Mint;
+    ui.settings.rows[1] = Row { show: Show::Tokens, style: Style::Plain };
+    let mut bytes = Vec::new();
+    let mut beats = SHOWCASE.iter().peekable();
+    for t in (0..SHOWCASE_MS).step_by(40) {
+        while let Some((_, beat)) = beats.next_if(|(at, _)| *at <= t) {
+            match *beat {
+                Beat::Press(input) => {
+                    if let Some(intent) = ui.input(&world, input, t) {
+                        host.send(intent, t);
+                    }
+                }
+                Beat::First(status, used) => (world.agents[0].status, world.agents[0].ctx_used) = (status, used),
+                Beat::Focused(status) => world.agents[world.focused].status = status,
+            }
+        }
+        host.step(&mut world, t);
+        if let Some(intent) = ui.tick(&world, t) {
+            host.send(intent, t);
+        }
+        ui.render(&world, t, &mut frame);
+        bytes.extend(frame.pixels().iter().flat_map(|p| [p.0, p.1, p.2]));
+    }
+    std::fs::write(out, bytes).expect("write showcase");
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if let Some(i) = args.iter().position(|a| a == "--showcase") {
+        return showcase(&args[i + 1]);
+    }
     if args.iter().any(|a| a == "--dump") {
         return dump();
     }
