@@ -205,6 +205,52 @@ dependencies = [
 ]
 
 [[package]]
+name = "herdr-deck-bridge"
+version = "0.1.0"
+dependencies = [
+ "herdr-deck-proto",
+ "herdr-deck-render",
+ "libc",
+ "nusb",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "herdr-deck-device"
+version = "0.1.0"
+dependencies = [
+ "herdr-deck-proto",
+ "herdr-deck-render",
+ "libc",
+]
+
+[[package]]
+name = "herdr-deck-proto"
+version = "0.1.0"
+dependencies = [
+ "herdr-deck-render",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "herdr-deck-render"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "herdr-deck-sim"
+version = "0.1.0"
+dependencies = [
+ "herdr-deck-render",
+ "minifb",
+]
+
+[[package]]
 name = "instant"
 version = "0.1.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -398,52 +444,6 @@ name = "pin-project-lite"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
-
-[[package]]
-name = "pixbar-bridge"
-version = "0.1.0"
-dependencies = [
- "libc",
- "nusb",
- "pixbar-proto",
- "pixbar-render",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "pixbar-device"
-version = "0.1.0"
-dependencies = [
- "libc",
- "pixbar-proto",
- "pixbar-render",
-]
-
-[[package]]
-name = "pixbar-proto"
-version = "0.1.0"
-dependencies = [
- "pixbar-render",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "pixbar-render"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "pixbar-sim"
-version = "0.1.0"
-dependencies = [
- "minifb",
- "pixbar-render",
-]
 
 [[package]]
 name = "pkg-config"

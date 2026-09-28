@@ -22,16 +22,16 @@ and settings in full, models, what goes over the network, battery, going back, a
 
 ```
  Claude Code sessions ── status line + screen ──┐
- herdr server ◄── unix socket ──► pixbar-bridge (host) ◄── TCP, JSON lines ──► pixbar-device (on the TC002)
+ herdr server ◄── unix socket ──► herdr-deck (host) ◄── TCP, JSON lines ──► herdr-deck-device (on the TC002)
 ```
 
 | Crate | What it is |
 |---|---|
-| `pixbar-render` | The whole UI as a pure function of (agents, inputs, time) → 52×16 frame. Shared by everything below |
-| `pixbar-sim` | Desktop LED window with a fake host: `cargo run -p pixbar-sim` |
-| `pixbar-proto` | Wire messages between bridge and device |
-| `pixbar-device` | Static ARM program that replaces Ulanzi's app at runtime (nothing is flashed) |
-| `pixbar-bridge` | Host daemon: reads herdr + Claude Code's status line data, focuses agents, drives the `/model` picker |
+| `herdr-deck-render` | The whole UI as a pure function of (agents, inputs, time) → 52×16 frame. Shared by everything below |
+| `herdr-deck-sim` | Desktop LED window with a fake host: `cargo run -p herdr-deck-sim` |
+| `herdr-deck-proto` | Wire messages between bridge and device |
+| `herdr-deck-device` | Static ARM program that replaces Ulanzi's app at runtime (nothing is flashed) |
+| `herdr-deck` | Host daemon: reads herdr + Claude Code's status line data, focuses agents, drives the `/model` picker |
 
 ## What it needs
 
@@ -46,55 +46,61 @@ and settings in full, models, what goes over the network, battery, going back, a
 
 Tried with herdr 0.8.2 (socket protocol 20), Claude Code 2.1.278, and a TC002 whose `getprop` says
 `ro.firmware ssd21x_ulanzi_I008`, `ro.build.date 20260527`, `ro.easyui.version 2.4.0`, `ro.system.version 2.6.2`
-(`pixbar-bridge shell IP getprop` shows yours). It leans on things neither herdr nor Claude Code promises to keep:
+(`herdr-deck shell IP getprop` shows yours). It leans on things neither herdr nor Claude Code promises to keep:
 the fields of herdr's snapshot, the words on Claude Code's `/model` picker, the status line's input. `doctor`
 says which link is broken when one of them moves.
 
 ## Installing
 
 ```sh
-cargo build --release                     # the bridge, with the device program inside it (rustup fetches the ARM target)
-target/release/pixbar-bridge install      # copy it to ~/.local/bin, hook the status line, start the service
-pixbar-bridge deploy [IP|usb]             # once per panel: start the herdr-deck program on it
-pixbar-bridge doctor                      # every link from Claude Code to the panel, checked
+cargo build --release               # the bridge, with the device program inside it (rustup fetches the ARM target)
+target/release/herdr-deck install   # copy it to ~/.local/bin, hook the status line, start the service
+herdr-deck deploy [IP|usb]          # once per panel: start the herdr-deck program on it
+herdr-deck doctor                   # every link from Claude Code to the panel, checked
 ```
 
 `install` does three things, and `uninstall` takes all three away again:
 
-- It copies the binary to `~/.local/bin/pixbar-bridge`, so that nothing points into the build directory. After a
-  rebuild, run `target/release/pixbar-bridge install` again: it replaces the copy and restarts the service.
-- It runs `pixbar-bridge run` as a service from login on: a systemd user unit on Linux
-  (`journalctl --user -u pixbar-bridge`), a LaunchAgent on macOS (`~/Library/Logs/pixbar-bridge.log`). Installed
+- It copies the binary to `~/.local/bin/herdr-deck`, so that nothing points into the build directory. After a
+  rebuild, run `target/release/herdr-deck install` again: it replaces the copy and restarts the service.
+- It runs `herdr-deck run` as a service from login on: a systemd user unit on Linux
+  (`journalctl --user -u herdr-deck`), a LaunchAgent on macOS (`~/Library/Logs/herdr-deck.log`). Installed
   from inside a pane of a named herdr session, the service is pinned to that session's socket. `--no-service`
-  leaves this out; `pixbar-bridge run` in a terminal does the same job.
+  leaves this out; `herdr-deck run` in a terminal does the same job.
 - It adds a call to your status line script, the way an installer adds a PATH line to a shell profile. Model,
   effort, context, cost, usage windows and the session name all come from Claude Code's status line input, so the
   script that draws your line hands a copy of it to the bridge, right after it has read it:
 
   ```sh
   input=$(cat)
-  # >>> pixbar-bridge >>>
-  # Added by `pixbar-bridge install`, removed by `pixbar-bridge uninstall`: the panel's model, effort and context.
-  printf '%s' "$input" | /home/you/.local/bin/pixbar-bridge statusline 2>/dev/null || true
-  # <<< pixbar-bridge <<<
+  # >>> herdr-deck >>>
+  # Added by `herdr-deck install`, removed by `herdr-deck uninstall`: the panel's model, effort and context.
+  printf '%s' "$input" | /home/you/.local/bin/herdr-deck statusline 2>/dev/null || true
+  # <<< herdr-deck <<<
   ```
 
   The script stays yours and stays the status line command; `settings.json` is not touched. A second `install`
   brings the block up to date where it stands, and a call to the bridge that you had put in by hand is taken
   over in place. It knows how to add to a shell script that reads its input into a variable (`input=$(cat)`, the
   form in Claude Code's examples and the one `/statusline` writes). For anything else (a Python script, a `jq`
-  one-liner in `settings.json`) it changes nothing and prints the line to add: `pixbar-bridge statusline` takes the
+  one-liner in `settings.json`) it changes nothing and prints the line to add: `herdr-deck statusline` takes the
   JSON on its stdin and prints nothing. Only where there is no status line at all does `install` set
-  `statusLine.command` in `~/.claude/settings.json`, to `pixbar-bridge statusline` by itself. `--no-statusline`
+  `statusLine.command` in `~/.claude/settings.json`, to `herdr-deck statusline` by itself. `--no-statusline`
   leaves all of this out.
 
 Claude Code runs the status line whenever the model, the effort or the token count changes, so the panel follows a
 `/model` typed in the session as fast as one made with its own button, and the context figure is Claude Code's own
 (what was sent plus the reply). The usage windows are the account's, so the newest report of any session counts for
-all of them. The newest input of every session is kept in `~/.cache/pixbar/sessions/`. A session that was already
+all of them. The newest input of every session is kept in `~/.cache/herdr-deck/sessions/`. A session that was already
 running when this was set up reports in at its next change; one that never does shows as Opus, high, 0K, and
 `doctor` says why (a project with a `statusLine` of its own replaces yours, a folder whose trust prompt was not
 accepted runs none, `disableAllHooks` switches it off).
+
+Until September 2026 the project was called pixbar, and its bridge `pixbar-bridge`. `herdr-deck install` takes such
+an install over: it stops and removes the `pixbar-bridge` service, moves `~/.config/pixbar` and `~/.cache/pixbar`
+over (the panels it knows, your models list), turns its block in the status line script into a `herdr-deck` one and
+deletes `~/.local/bin/pixbar-bridge`. A panel still running the old program is found by its old beacon; `deploy`
+replaces the program, and the new one keeps the panel's settings (from `/data/pixbar.conf`).
 
 With the service running, switching the device on is all it takes. The bridge waits quietly while herdr is not
 running.
@@ -104,13 +110,13 @@ running.
 The bridge carries the device program inside it and speaks enough of the adb protocol itself (the device's adbd on
 port 5555 asks for no key), so none of this needs adb installed:
 
-- `pixbar-bridge deploy [IP]` pushes the program and starts it, and remembers the device (by MAC, in `~/.config/pixbar/devices`).
-- `pixbar-bridge run` connects to a panel running herdr-deck, found by its beacon. The device runs the program from RAM, so after
+- `herdr-deck deploy [IP]` pushes the program and starts it, and remembers the device (by MAC, in `~/.config/herdr-deck/devices`).
+- `herdr-deck run` connects to a panel running herdr-deck, found by its beacon. The device runs the program from RAM, so after
   every power-up it is back on Ulanzi's firmware; when `run` hears a device it remembers in that state, it starts the
   program again by itself. A TC002 it has never deployed to is left alone. `run --device IP` names the device instead.
-- `pixbar-bridge stock [IP]` gives the panel back to Ulanzi's firmware, and so does STOCK FW in the panel's settings.
+- `herdr-deck stock [IP]` gives the panel back to Ulanzi's firmware, and so does STOCK FW in the panel's settings.
   It stays that way, service or not, until `deploy` or until the panel has been switched off and on.
-- `pixbar-bridge find` lists what is on the network.
+- `herdr-deck find` lists what is on the network.
 - A device running another build than the one this bridge carries is reported, not replaced: two hosts with
   different builds would otherwise push over each other. `deploy` updates it.
 
@@ -128,7 +134,7 @@ the host that owns the agent. The HOSTS settings page picks whose agents it show
   server instead; it never starts one.
 - While the service holds the cable, `deploy usb` from a terminal cannot have it: stop the service for the push and
   start it again after (on macOS:
-  `launchctl bootout gui/$UID/dev.pixbar.bridge; pixbar-bridge deploy usb; launchctl bootstrap gui/$UID ~/Library/LaunchAgents/dev.pixbar.bridge.plist`),
+  `launchctl bootout gui/$UID/dev.herdr-deck; herdr-deck deploy usb; launchctl bootstrap gui/$UID ~/Library/LaunchAgents/dev.herdr-deck.plist`),
   or deploy to the panel's network address.
 - The panel's port is dual-role, and Ulanzi's firmware leaves it in host mode, where a PC sees nothing. After a
   power-up it does answer for some two seconds (measured: from 3.4 s to 6.0 s after the reset). A `run` that is
@@ -139,7 +145,7 @@ the host that owns the agent. The HOSTS settings page picks whose agents it show
   over WiFi once: the herdr-deck program keeps the port in device mode for as long as it runs).
 - Linux gives whoever is logged in at the machine access to adb devices from systemd 258 on. On an older one, or
   for a service that runs with nobody logged in, the bridge names the udev rule that is missing.
-- macOS asks once whether pixbar-bridge may find devices on the local network (System Settings > Privacy &
+- macOS asks once whether herdr-deck may find devices on the local network (System Settings > Privacy &
   Security > Local Network); refused, it hears no panel over WiFi. The cable does not need it.
 - Inside a herdr pane the bridge uses that pane's herdr (`HERDR_SOCKET_PATH`); anywhere else it looks where herdr
   puts its socket (`~/.config/herdr/herdr.sock`, under `XDG_CONFIG_HOME` if that is set, under `sessions/<name>/`
@@ -155,7 +161,7 @@ the host that owns the agent. The HOSTS settings page picks whose agents it show
 | Knob push | While the name is up after a turn, or the effort rail or the model switch is showing: back to the resting screen (an effort still settling is sent, a model switch only armed is dropped). From the resting screen: the menu (below); again to close it |
 | Knob long-press | Settings (below) |
 | Left / right | Effort down / up: LOW · MED · HIGH · XHIGH · MAX · ULTRA (ultracode). Sent 0.7 s after the last press. Held down, a button repeats like a key (after 0.4 s, then every 0.15 s), here and in the settings; a repeat never counts as the confirming press of TURN OFF / STOCK FW |
-| Middle | The next model: Opus and Fable unless `~/.config/pixbar/models` says otherwise (see [Models](#models)). Shows its name with a `?` and the context that would be re-read uncached; press again within 4 s to send, leave it or press anything else to drop it. A session that has not replied yet since it started, was cleared or was compacted switches on one press |
+| Middle | The next model: Opus and Fable unless `~/.config/herdr-deck/models` says otherwise (see [Models](#models)). Shows its name with a `?` and the context that would be re-read uncached; press again within 4 s to send, leave it or press anything else to drop it. A session that has not replied yet since it started, was cleared or was compacted switches on one press |
 
 Changes are applied by typing into the session's `/model` picker (`alt+p`, arrows, `s`): session-only, leaves a
 half-typed prompt alone, never writes `~/.claude/settings.json`, refused while the agent is blocked on a prompt.
@@ -194,7 +200,7 @@ the focus moves from the keyboard meanwhile, it closes rather than point somewhe
 
 The knob turns the pages, left / right change the value (as they move the effort rail), knob push closes. Rows,
 styles, the name and the pet are previewed live with the focused agent's data. Kept on the device in
-`/data/pixbar.conf`; reachable without a host, so the HOSTS page can tell you the address to connect to.
+`/data/herdr-deck.conf`; reachable without a host, so the HOSTS page can tell you the address to connect to.
 
 | Setting | Values |
 |---|---|
@@ -209,7 +215,7 @@ styles, the name and the pet are previewed live with the focused agent's data. K
 | HOSTS | Connected hosts and how each got there (`DESKTOP USB`, `LAPTOP WIFI`). Left / right pick whose agents the panel shows: `ALL`, or one of them. The pick is kept by the host's name, so it holds when that machine connects again, by cable or WiFi; `NOT HERE` says the picked one is away, and its place is held until you step off it. While it is away the resting screen says so too, rather than leave an empty strip |
 | DEVICE | read-only, left / right step through: battery (charge, and the cell voltage or "on USB"), the WiFi network it is set up for, its `ip:port`, version |
 | TURN OFF | right, then right again within 4 s: powers the device off through its MCU |
-| STOCK FW | the same two presses: stops this program and starts Ulanzi's firmware again (`pixbar-bridge deploy`, or switching the panel off and on, brings this one back) |
+| STOCK FW | the same two presses: stops this program and starts Ulanzi's firmware again (`herdr-deck deploy`, or switching the panel off and on, brings this one back) |
 
 ### The dango
 
@@ -225,10 +231,10 @@ dizzy. A row of `CTX K` or `CTX %` gives it more room. The PET page plays all it
 ## Models
 
 **The middle button steps between Opus and Fable.** To step through other models, or more than two, write the
-names into `~/.config/pixbar/models`, one per line, as Claude Code's `/model` picker calls them:
+names into `~/.config/herdr-deck/models`, one per line, as Claude Code's `/model` picker calls them:
 
 ```sh
-printf 'Opus\nSonnet\nHaiku\n' > ~/.config/pixbar/models     # what the middle button steps through
+printf 'Opus\nSonnet\nHaiku\n' > ~/.config/herdr-deck/models     # what the middle button steps through
 ```
 
 Names are matched on their first word, ignoring case, so `Sonnet`, `sonnet` and `Claude Sonnet 4.5` all pick the
@@ -271,37 +277,37 @@ powers the device off, so the cell is not run down to its protection cut-off.
 
 ## Going back
 
-- `pixbar-bridge stock [IP|usb]`, or STOCK FW in the panel's settings: Ulanzi's firmware now, and it stays until
+- `herdr-deck stock [IP|usb]`, or STOCK FW in the panel's settings: Ulanzi's firmware now, and it stays until
   `deploy` or the next power-up. Switching the panel off and on always ends in Ulanzi's firmware for a moment:
-  nothing of this project is on its flash except its settings (`/data/pixbar.conf`, about 140 bytes).
-- `pixbar-bridge uninstall`: removes the service, takes its block out of your status line script, and deletes
-  `~/.local/bin/pixbar-bridge`, `~/.config/pixbar` and `~/.cache/pixbar`.
+  nothing of this project is on its flash except its settings (`/data/herdr-deck.conf`, about 140 bytes).
+- `herdr-deck uninstall`: removes the service, takes its block out of your status line script, and deletes
+  `~/.local/bin/herdr-deck`, `~/.config/herdr-deck` and `~/.cache/herdr-deck`.
 - If the panel ever does not come up at all, Ulanzi's recovery is to hold its reset button while switching it on.
   This project has never needed it.
 
 ## When something is off
 
-`pixbar-bridge doctor` goes through every link and says what mends the broken one: the installed binary, the
+`herdr-deck doctor` goes through every link and says what mends the broken one: the installed binary, the
 service, whose status line command Claude Code runs (yours, a project's, an administrator's), herdr and whether
 it knows the panes' sessions, each session's last report, the cable, the network. The usual suspects: a project
 with a `statusLine` of its own, a folder whose trust prompt was never accepted (Claude Code then runs no status
 line there), a network that keeps its clients apart, a firewall that drops incoming UDP.
 
 ```sh
-pixbar-bridge state                         # what the device would be told, once
-pixbar-bridge set-effort w1:p1 max          # drive one pane's picker directly (also set-model … opus|fable)
-pixbar-bridge menu w1:p1 split_right        # what the panel's menu does: compact clear rename split_right split_down close_tab close_pane
-pixbar-bridge log [IP|usb]                  # what the device program has logged since it started
-pixbar-bridge shell IP|usb 'ls /tmp'        # the panel's root shell (it has no sleep, grep, head or tail)
-pixbar-device --demo --log-input            # on the device: built-in agents, print raw knob/button events
+herdr-deck state                      # what the device would be told, once
+herdr-deck set-effort w1:p1 max       # drive one pane's picker directly (also set-model … opus|fable)
+herdr-deck menu w1:p1 split_right     # what the panel's menu does: compact clear rename split_right split_down close_tab close_pane
+herdr-deck log [IP|usb]               # what the device program has logged since it started
+herdr-deck shell IP|usb 'ls /tmp'     # the panel's root shell (it has no sleep, grep, head or tail)
+herdr-deck-device --demo --log-input  # on the device: built-in agents, print raw knob/button events
 ```
 
 One static file for another Linux machine, whatever its libc:
-`rustup target add x86_64-unknown-linux-musl && cargo build --release -p pixbar-bridge --target x86_64-unknown-linux-musl`.
+`rustup target add x86_64-unknown-linux-musl && cargo build --release -p herdr-deck-bridge --target x86_64-unknown-linux-musl`.
 
 ## The simulator
 
-`cargo run -p pixbar-sim` opens the panel in a window, with five made-up agents and a fake host that answers
+`cargo run -p herdr-deck-sim` opens the panel in a window, with five made-up agents and a fake host that answers
 after 400 ms. Up / down or the mouse wheel turn the knob, Enter pushes it (held: settings), left / right are the
 effort buttons, space is the middle one, B cycles the focused agent's status, P pulls and plugs the USB cable.
 `--pet mint` starts it with the dango.
@@ -309,7 +315,7 @@ effort buttons, space is the middle one, B cycles the focused agent's status, P 
 Without a window: `--dump` prints a scripted session as text frames, `--reel mint out.rgb` records the dango
 through an afternoon of its agent, and `--showcase DIR` records the README's GIFs, a scene per feature, which
 `python3 docs/gif.py DIR docs/gifs` (Pillow) turns into `docs/gifs/*.gif`. The scenes are `SCENES` in
-`crates/pixbar-sim/src/main.rs`; for the ones that show herdr above the panel it also writes herdr's state at every
+`crates/herdr-deck-sim/src/main.rs`; for the ones that show herdr above the panel it also writes herdr's state at every
 frame, from which `docs/gif.py` draws herdr (made-up agents; a monospace font such as Menlo or DejaVu Sans Mono).
 
 The window and the GIFs show the LEDs as bright as they look rather than the values they are given: the panel's
@@ -322,7 +328,7 @@ quarter of full brightness looks about two thirds as bright.
   serial framing and the recovery procedure were worked out by the people behind
   [tc002-customisation](https://github.com/aquarat/tc002-customisation); this project uses those facts and none of
   their code. `docs/research.md` says which findings are theirs and which were measured here.
-- The two pixel faces (3×5 and 5×7) are spelled out in `crates/pixbar-render/src/font.rs`; no font file
+- The two pixel faces (3×5 and 5×7) are spelled out in `crates/herdr-deck-render/src/font.rs`; no font file
   was imported.
 - [`docs/research.md`](research.md) is the lab notebook this grew out of, dated and written for its author: a
   record of what was measured and why things are as they are, not a description of the program as it is now.

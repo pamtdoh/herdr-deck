@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Static mockups of the pixbar layout (52x16). Prints ASCII, writes PNGs if Pillow is present.
+"""Static mockups of the herdr-deck layout (52x16). Prints ASCII, writes PNGs if Pillow is present.
 
 v2: resting screen is statusline-like text; the effort slider is a temporary overlay with round shapes.
 """

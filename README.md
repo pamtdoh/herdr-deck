@@ -64,14 +64,14 @@ it works, munching as the context grows, startled when it is blocked, beaming wh
 
 ```sh
 cargo build --release
-target/release/pixbar-bridge install   # into ~/.local/bin, a line in your status line script, a login service
-pixbar-bridge deploy usb               # or: deploy <the panel's IP>. Once per panel
-pixbar-bridge doctor                   # checks every link from Claude Code to the panel
+target/release/herdr-deck install   # into ~/.local/bin, a line in your status line script, a login service
+herdr-deck deploy usb               # or: deploy <the panel's IP>. Once per panel
+herdr-deck doctor                   # checks every link from Claude Code to the panel
 ```
 
 From then on, switching the panel on is all it takes: the service finds it and starts herdr-deck on it.
 
-No panel yet? `cargo run -p pixbar-sim -- --pet mint` runs the whole thing in a window (up / down: knob, Enter:
+No panel yet? `cargo run -p herdr-deck-sim -- --pet mint` runs the whole thing in a window (up / down: knob, Enter:
 push, hold Enter: settings, left / right: effort, space: model, B: change the agent's status).
 
 ## Controls
@@ -105,7 +105,7 @@ Long-press the knob, turn it for the page, left / right for the value. Kept on t
 | DEVICE | battery, WiFi, address, version |
 | TURN OFF, STOCK FW | power off, or back to Ulanzi's firmware (two presses) |
 
-The middle button steps between Opus and Fable; to step through others, list them in `~/.config/pixbar/models`,
+The middle button steps between Opus and Fable; to step through others, list them in `~/.config/herdr-deck/models`,
 one per line.
 
 ## More

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """The README's GIFs, made from the simulator's frames:
 
-    cargo run -p pixbar-sim -- --showcase /tmp/pixbar
-    python3 docs/gif.py /tmp/pixbar docs/gifs
+    cargo run -p herdr-deck-sim -- --showcase /tmp/herdr-deck
+    python3 docs/gif.py /tmp/herdr-deck docs/gifs
 
 The simulator writes a file per feature, each frame 52x16 RGB bytes, one every 40 ms; this draws each as the panel
 looks (round LEDs behind a dark face, lit as the eye sees them, the unlit ones faintly there; square, so that it

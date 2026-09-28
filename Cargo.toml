@@ -1,15 +1,15 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/pixbar-render",
-    "crates/pixbar-sim",
-    "crates/pixbar-proto",
-    "crates/pixbar-device",
-    "crates/pixbar-bridge",
+    "crates/herdr-deck-render",
+    "crates/herdr-deck-sim",
+    "crates/herdr-deck-proto",
+    "crates/herdr-deck-device",
+    "crates/herdr-deck-bridge",
 ]
 # Without the simulator: it is a window on a desktop, with some eighty crates and a C compile of its own.
-# `cargo run -p pixbar-sim` still builds it.
-default-members = ["crates/pixbar-render", "crates/pixbar-proto", "crates/pixbar-device", "crates/pixbar-bridge"]
+# `cargo run -p herdr-deck-sim` still builds it.
+default-members = ["crates/herdr-deck-render", "crates/herdr-deck-proto", "crates/herdr-deck-device", "crates/herdr-deck-bridge"]
 
 [workspace.package]
 edition = "2021"

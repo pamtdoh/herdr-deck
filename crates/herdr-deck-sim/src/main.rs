@@ -1,0 +1,753 @@
+//! Desktop stand-in for the TC002: renders the UI as an LED matrix and fakes the herdr side.
+//!
+//!   up / down or mouse wheel   knob rotate (hold to spin)   enter   knob push = menu (name up: dismiss); hold = settings
+//!   left / right               effort buttons               space   model button (again to confirm)
+//!   B  cycle focused agent's status   P  pull / plug the USB cable (the battery drops 15 % each pull)   esc  quit
+//!   in the menu (enter): up / down = turn the carousel, left / right = the entry's other choice, space = do it
+//!   in settings (hold enter): up / down = page, left / right = value
+//!
+//! `herdr-deck-sim --dump` prints a scripted session as ASCII frames instead of opening a window;
+//! with `HERDR_DECK_DUMP_DIR=<dir>` it also writes each frame as a colour PPM.
+//!
+//! `herdr-deck-sim --pet mint` starts with the dango in that colour (`mint`, `pink`, `peach`, `lemon`, `sky`, `lilac`).
+//! `herdr-deck-sim --showcase DIR` records the README's GIFs, a scene per feature (`docs/gif.py` makes the GIFs).
+//! `herdr-deck-sim --reel mint out.rgb [tokens|name|cost|cards]` plays a scripted afternoon of the focused agent (working while its context grows and fills, blocked for long enough to
+//! get cross, done, compacted, idle, the focus moving away and back, working again) and writes every 40 ms frame to
+//! `out.rgb`, 52x16 RGB bytes each, for turning into a GIF.
+
+use std::time::Instant;
+
+use minifb::{Key, KeyRepeat, Window, WindowOptions};
+use herdr_deck_render::{
+    Agent, Blocks, Command, Effort, Frame, HostLink, Info, Input, Intent, Limit, Model, Pet, Power, Row, Show, Status, Style, Ui,
+    World, H, W,
+};
+
+const CELL: usize = 16;
+/// Pretend round trip to herdr + Claude Code before a change shows up in the world state.
+const HOST_DELAY_MS: u64 = 400;
+
+/// A made-up agent: a space and tab in herdr, a status, a model and effort, and how full its context is.
+fn agent(space: &str, tab: &str, status: Status, model: &str, effort: Effort, used: u32, window: u32) -> Agent {
+    Agent {
+        reported: true,
+        // As with Claude Code's smallest model, which has no effort levels.
+        has_effort: model != "haiku",
+        next_model: Some(Model::new(if model == "opus" { "fable" } else { "opus" })),
+        space: space.into(),
+        tab: tab.into(),
+        status,
+        model: Model::new(model),
+        effort,
+        ctx_used: used,
+        ctx_window: window,
+        // The 200K sessions stand in for ones without workflows: their rail has five stops.
+        ultra_ok: window > 200_000,
+        dir: format!("{space}-repo"),
+        title: format!("Working on {space}"),
+        fresh: used < 20_000,
+        session: format!("{space} {tab}"),
+        cost_cents: used / 70,
+        limit_5h: Some(Limit { used_pct: (used / 8_000).min(100) as u8, resets_in_min: 200 }),
+        limit_7d: Some(Limit { used_pct: 29, resets_in_min: 4 * 24 * 60 + 300 }),
+    }
+}
+
+fn demo_world() -> World {
+    World {
+        agents: vec![
+            agent("web", "2", Status::Working, "opus", Effort::XHigh, 104_000, 1_000_000),
+            agent("parser", "1", Status::Blocked, "fable", Effort::High, 742_000, 1_000_000),
+            agent("design-system", "1", Status::Idle, "fable", Effort::XHigh, 38_000, 1_000_000),
+            agent("api", "3", Status::Done, "sonnet", Effort::Med, 186_000, 200_000),
+            agent("docs", "1", Status::Working, "haiku", Effort::High, 12_000, 200_000),
+        ],
+        focused: 0,
+    }
+}
+
+fn demo_info() -> Info {
+    Info {
+        addr: "192.0.2.7:17002".into(),
+        ssid: "homenet".into(),
+        hosts: vec![HostLink { name: "DESKTOP".into(), wired: true }, HostLink { name: "LAPTOP".into(), wired: false }],
+    }
+}
+
+/// Applies intents after a delay, the way the real bridge would confirm them.
+#[derive(Default)]
+struct FakeHost {
+    pending: Vec<(u64, Intent)>,
+}
+
+impl FakeHost {
+    fn send(&mut self, intent: Intent, now: u64) {
+        self.pending.push((now + HOST_DELAY_MS, intent));
+    }
+
+    fn step(&mut self, world: &mut World, now: u64) {
+        self.pending.retain(|&(due, intent)| {
+            if due > now {
+                return true;
+            }
+            match intent {
+                Intent::Focus(i) => world.focused = i,
+                Intent::SetEffort { agent, effort } => world.agents[agent].effort = effort,
+                Intent::SetModel { agent, model } => {
+                    let a = &mut world.agents[agent];
+                    (a.model, a.next_model) = (model, Some(a.model));
+                }
+                Intent::Run { agent, command } if agent < world.agents.len() => {
+                    println!("menu: {command:?} on {}", world.agents[agent].space);
+                    let a = &mut world.agents[agent];
+                    match command {
+                        Command::Compact => (a.ctx_used, a.fresh) = (17_000, true),
+                        Command::Clear => (a.ctx_used, a.fresh, a.cost_cents) = (0, true, 0),
+                        Command::CloseTab | Command::ClosePane if world.agents.len() > 1 => {
+                            world.agents.remove(agent);
+                            world.focused = world.focused.min(world.agents.len() - 1);
+                        }
+                        // Nothing of the others shows on the panel: the keyboard and herdr's window have the rest.
+                        _ => {}
+                    }
+                }
+                Intent::Run { .. } => {}
+            }
+            false
+        });
+    }
+}
+
+fn next_status(s: Status) -> Status {
+    match s {
+        Status::Idle => Status::Working,
+        Status::Working => Status::Blocked,
+        Status::Blocked => Status::Done,
+        Status::Done => Status::Unknown,
+        Status::Unknown => Status::Idle,
+    }
+}
+
+fn dump() {
+    let (mut world, mut ui, mut host, mut frame) = (demo_world(), Ui::new(), FakeHost::default(), Frame::new());
+    ui.info = demo_info();
+    let script: &[(u64, Option<Input>, &str)] = &[
+        (3000, None, "rest"),
+        (3000, Some(Input::Right), ""),
+        (3040, None, "effort up, knob mid-glide"),
+        (3400, None, "effort settled at MAX"),
+        (3500, Some(Input::Right), ""),
+        (3900, None, "past max: ULTRA, ripple starting at the knob"),
+        (5600, None, "ULTRA: ripple has flooded the panel"),
+        (5700, Some(Input::Right), ""),
+        (5710, None, "end stop bump"),
+        (9000, None, "rest: violet ULTRA tag with its shimmer"),
+        (10000, Some(Input::Middle), ""),
+        (10300, None, "model armed: 104K to re-read, underline draining, waiting for the second press"),
+        (11000, Some(Input::Middle), ""),
+        (11300, None, "second press: sent"),
+        (13000, Some(Input::KnobCw), ""),
+        (13040, Some(Input::KnobCw), ""),
+        (13200, None, "knob: two quick clicks, picker on agent 3; focus is the bright block"),
+        (19000, None, "6 s later the name is still up (linger setting)"),
+        (19100, Some(Input::KnobPush), ""),
+        (19180, None, "knob push while the name is up: back to the resting screen at once"),
+        (19200, Some(Input::KnobPush), ""),
+        (19280, None, "knob push at rest: the menu"),
+        (19300, Some(Input::Right), ""),
+        (19600, None, "menu: CLEAR, the first entry's other choice"),
+        (19700, Some(Input::Middle), ""),
+        (20500, None, "menu: CLEAR armed, fuses burning down, second press within 4 s does it"),
+        (20600, Some(Input::KnobCw), ""),
+        (20640, None, "menu: the knob dropped the armed CLEAR; one click on, the icons mid-slide"),
+        (20900, None, "menu: RENAME TAB"),
+        (21000, Some(Input::KnobCw), ""),
+        (21300, None, "menu: SPLIT RIGHT"),
+        (21400, Some(Input::Right), ""),
+        (21700, None, "menu: SPLIT DOWN"),
+        (21800, Some(Input::KnobCw), ""),
+        (22100, None, "menu: CLOSE TAB"),
+        (22200, Some(Input::Right), ""),
+        (22500, None, "menu: CLOSE PANE"),
+        (22600, Some(Input::KnobCw), ""),
+        (23300, None, "menu: round to COMPACT, where it opens"),
+        (23400, Some(Input::KnobPush), ""),
+        (23500, None, "knob push again: back to the resting screen"),
+        (30000, Some(Input::KnobLong), ""),
+        (30100, Some(Input::Right), ""),
+        (30400, None, "settings: brightness, right pressed once"),
+        (30500, Some(Input::KnobCw), ""),
+        (30600, Some(Input::Right), ""),
+        (30900, None, "settings: blocks, 3x3 touching; the strip is the preview"),
+        (31000, Some(Input::Right), ""),
+        (31010, Some(Input::Right), ""),
+        (31300, None, "settings: 2x2 touching, 32 agents"),
+        (31400, Some(Input::Left), ""),
+        (31410, Some(Input::Left), ""),
+        (31420, Some(Input::Left), ""),
+        (31500, Some(Input::KnobCw), ""),
+        (31800, None, "settings: row 1 shows the model, previewed live"),
+        (31900, Some(Input::KnobCw), ""),
+        (32000, Some(Input::Left), ""),
+        (32300, None, "settings: style 1 = tint"),
+        (32400, Some(Input::KnobCw), ""),
+        (32410, Some(Input::KnobCw), ""),
+        (32420, Some(Input::KnobCw), ""),
+        (32500, Some(Input::Right), ""),
+        (32900, None, "settings: name = dir"),
+        (33000, Some(Input::KnobCw), ""),
+        (33200, None, "settings: the pet (off)"),
+        (33250, Some(Input::KnobCw), ""),
+        (33300, None, "settings: how long the name lingers"),
+        (33400, Some(Input::KnobCw), ""),
+        (33500, Some(Input::KnobCw), ""),
+        (33800, None, "settings: hosts, and how each is connected"),
+        (33810, Some(Input::KnobCw), ""),
+        (33850, None, "settings: device, wifi network"),
+        (33860, Some(Input::Right), ""),
+        (33890, None, "settings: device, its address"),
+        (33900, Some(Input::KnobPush), ""),
+        (34200, None, "rest: model tinted, context plain"),
+    ];
+    let row = |show, style| Row { show, style };
+    let card_variants = [
+        ("cards, ultracode", [row(Show::Model, Style::Card), row(Show::Name, Style::Card)]),
+        ("tints, ultracode", [row(Show::Model, Style::Tint), row(Show::Name, Style::Tint)]),
+        ("model tint, context plain", [row(Show::Model, Style::Tint), row(Show::Context, Style::Plain)]),
+        ("model plain, context dim", [row(Show::Model, Style::Plain), row(Show::Context, Style::Dim)]),
+        ("model dim, context plain", [row(Show::Model, Style::Dim), row(Show::Context, Style::Plain)]),
+        ("model plain, context tint", [row(Show::Model, Style::Plain), row(Show::Context, Style::Tint)]),
+        ("name row + model card", [row(Show::Name, Style::Plain), row(Show::Model, Style::Card)]),
+        ("low context: model card, context card", [row(Show::Model, Style::Card), row(Show::Context, Style::Card)]),
+        ("low context: model tint, context tint", [row(Show::Model, Style::Tint), row(Show::Context, Style::Tint)]),
+        ("low context: model plain, name card", [row(Show::Model, Style::Plain), row(Show::Name, Style::Card)]),
+        ("low context: model tint, context dim", [row(Show::Model, Style::Tint), row(Show::Context, Style::Dim)]),
+        ("name plain (full white) over model", [row(Show::Name, Style::Plain), row(Show::Model, Style::Plain)]),
+        ("name dim over model", [row(Show::Name, Style::Dim), row(Show::Model, Style::Plain)]),
+        ("usage windows: 5 hours over 7 days", [row(Show::Limit5h, Style::Plain), row(Show::Limit7d, Style::Dim)]),
+        ("cost card over the 5-hour window as a tint", [row(Show::Cost, Style::Card), row(Show::Limit5h, Style::Tint)]),
+    ];
+    for &(t, input, caption) in script {
+        if let Some(i) = input {
+            if let Some(intent) = ui.input(&world, i, t) {
+                host.send(intent, t);
+            }
+            continue;
+        }
+        // Run the timers up to `t` the way the 60 fps loop would.
+        let mut now = t.saturating_sub(2500);
+        while now <= t {
+            host.step(&mut world, now);
+            if let Some(intent) = ui.tick(&world, now) {
+                host.send(intent, now);
+            }
+            now += 16;
+        }
+        ui.render(&world, t, &mut frame);
+        println!("--- t={t} ms: {caption}\n{}", frame.to_ascii());
+        if let Ok(dir) = std::env::var("HERDR_DECK_DUMP_DIR") {
+            write_ppm(&frame, &format!("{dir}/frame-{t:05}.ppm"));
+        }
+    }
+    // Battery: the cable comes out at 87 %, later the cell is nearly flat.
+    let mut shot = |ui: &mut Ui, world: &World, t: u64, caption: &str| {
+        ui.tick(world, t);
+        ui.render(world, t, &mut frame);
+        println!("--- t={t} ms: {caption}\n{}", frame.to_ascii());
+        if let Ok(dir) = std::env::var("HERDR_DECK_DUMP_DIR") {
+            write_ppm(&frame, &format!("{dir}/frame-{t:05}.ppm"));
+        }
+    };
+    ui.set_power(Power { percent: Some(87), millivolts: Some(4160), on_usb: Some(true) }, 39_000);
+    ui.set_power(Power { percent: Some(87), millivolts: Some(4050), on_usb: Some(false) }, 40_000);
+    shot(&mut ui, &world, 41_000, "battery notice: cable pulled");
+    ui.set_power(Power { percent: Some(9), millivolts: Some(3620), on_usb: Some(false) }, 45_000);
+    shot(&mut ui, &world, 46_000, "battery notice: fell under 10 %");
+    ui.set_power(Power { percent: Some(2), millivolts: Some(3540), on_usb: Some(false) }, 47_000);
+    ui.tick(&world, 47_000);
+    ui.tick(&world, 57_100);
+    shot(&mut ui, &world, 62_300, "cell under 3.55 V for 10 s: counting down to power-off");
+    ui.set_power(Power { percent: Some(3), millivolts: Some(3700), on_usb: Some(true) }, 63_000);
+    shot(&mut ui, &world, 63_500, "cable back in: countdown gone, charging notice");
+    let mut t = 70_000;
+    ui.input(&world, Input::KnobLong, t);
+    for _ in 0..2 {
+        t += 100;
+        ui.input(&world, Input::KnobCcw, t);
+    }
+    shot(&mut ui, &world, t + 400, "settings: turn off");
+    ui.input(&world, Input::Right, t + 500);
+    shot(&mut ui, &world, t + 700, "settings: turn off, armed");
+    ui.input(&world, Input::KnobCcw, t + 800);
+    shot(&mut ui, &world, t + 1200, "settings: device, battery");
+    ui.input(&world, Input::KnobPush, t + 1300);
+
+    world.focused = 0;
+    ui.tick(&world, t + 2000);
+    world.agents[0].effort = Effort::Ultra;
+    world.agents[0].ctx_used = 760_000;
+    for (i, (caption, rows)) in card_variants.into_iter().enumerate() {
+        ui.settings.rows = rows;
+        if caption.starts_with("low context") {
+            world.agents[0].ctx_used = 104_000;
+            world.agents[0].model = Model::new("opus");
+            world.agents[0].effort = Effort::XHigh;
+        }
+        // Late enough that the name flash from the focus change above is over.
+        let t = 80_000 + i as u64 * 100;
+        ui.tick(&world, t);
+        ui.render(&world, t, &mut frame);
+        println!("--- t={t} ms: {caption}\n{}", frame.to_ascii());
+        if let Ok(dir) = std::env::var("HERDR_DECK_DUMP_DIR") {
+            write_ppm(&frame, &format!("{dir}/frame-{t:05}.ppm"));
+        }
+    }
+}
+
+/// An LED as bright as it looks rather than the value it was given: the panel's driver lifts anything lit into
+/// 50..=255 (it shows nothing below 50), and the eye sees light on a curve (gamma 2.2), so a block at a quarter of
+/// full brightness looks about two thirds as bright, not a quarter. Its hue is kept: lifted channel by channel,
+/// colours wash out on a screen far more than they do on the panel's LEDs.
+fn seen(led: herdr_deck_render::Rgb) -> [u8; 3] {
+    let top = led.0.max(led.1).max(led.2) as f32;
+    if top == 0.0 {
+        return [0, 0, 0];
+    }
+    let looks = 255.0 * ((50.0 + (top - 1.0) * 205.0 / 254.0) / 255.0).powf(1.0 / 2.2);
+    [led.0, led.1, led.2].map(|v| (v as f32 * looks / top).round() as u8)
+}
+
+/// Plain PPM at 12 px per LED with a 2 px dark gap, enough to judge colours and legibility.
+fn write_ppm(frame: &Frame, path: &str) {
+    const S: usize = 12;
+    let mut out = format!("P6\n{} {}\n255\n", W * S, H * S).into_bytes();
+    for y in 0..H * S {
+        for x in 0..W * S {
+            let led = frame.pixels()[(y / S) * W + x / S];
+            let gap = x % S >= S - 2 || y % S >= S - 2;
+            let off = led == herdr_deck_render::Rgb::OFF;
+            out.extend_from_slice(&if gap { [10, 10, 10] } else if off { [22, 22, 22] } else { seen(led) });
+        }
+    }
+    std::fs::write(path, out).expect("write ppm");
+}
+
+fn pet_arg(name: &str) -> Pet {
+    Pet::ALL.iter().find(|p| p.1 == name).map(|p| p.0).unwrap_or_else(|| panic!("no pet called {name}"))
+}
+
+/// What the first agent does over the reel, how full its context is, and which agent has the focus:
+/// (from ms, status, tokens, focused).
+const REEL: &[(u64, Status, u32, usize)] = &[
+    (0, Status::Working, 12_000, 0),
+    (5_000, Status::Working, 38_000, 0),
+    (10_000, Status::Working, 104_000, 0),
+    (16_000, Status::Working, 760_000, 0),
+    (22_000, Status::Working, 930_000, 0),
+    (28_000, Status::Blocked, 930_000, 0),
+    (54_000, Status::Done, 935_000, 0),
+    (64_000, Status::Working, 935_000, 0),
+    (68_000, Status::Working, 120_000, 0),
+    (74_000, Status::Idle, 120_000, 0),
+    (86_000, Status::Idle, 120_000, 2),
+    (90_000, Status::Idle, 120_000, 0),
+    (94_000, Status::Working, 124_000, 0),
+    (100_000, Status::Unknown, 124_000, 0),
+    (106_000, Status::Unknown, 124_000, 0),
+];
+
+fn reel(pet: Pet, out: &str, rows: Option<[Row; 2]>) {
+    let (mut world, mut ui, mut frame) = (demo_world(), Ui::new(), Frame::new());
+    ui.settings.pet = pet;
+    if let Some(rows) = rows {
+        ui.settings.rows = rows;
+    }
+    let mut bytes = Vec::new();
+    let end = REEL.last().unwrap().0;
+    for t in (0..end).step_by(40) {
+        let &(_, status, used, focused) = REEL.iter().rev().find(|r| r.0 <= t).unwrap();
+        (world.agents[0].status, world.agents[0].ctx_used, world.focused) = (status, used, focused);
+        ui.tick(&world, t);
+        ui.render(&world, t, &mut frame);
+        bytes.extend(frame.pixels().iter().flat_map(|p| [p.0, p.1, p.2]));
+    }
+    // And the settings page that picks it.
+    ui.input(&world, Input::KnobLong, end);
+    for k in 1..=7 {
+        ui.input(&world, Input::KnobCw, end + k * 10);
+    }
+    for t in (end + 1000..end + 16_000).step_by(40) {
+        ui.tick(&world, t);
+        ui.render(&world, t, &mut frame);
+        bytes.extend(frame.pixels().iter().flat_map(|p| [p.0, p.1, p.2]));
+    }
+    std::fs::write(out, bytes).expect("write reel");
+}
+
+/// Something that happens in one of the README's GIFs.
+#[derive(Clone, Copy)]
+enum Beat {
+    Press(Input),
+    /// The focus moved in herdr itself, from the keyboard: the panel follows.
+    Focus(usize),
+    /// An agent's status changes.
+    Status(usize, Status),
+    /// The resting rows and the strip's blocks change, as if picked in the settings.
+    Layout([Row; 2], Blocks),
+}
+
+/// One feature, shown for `ms` in a GIF of its own (`name`): the agents it starts with, and what happens.
+/// `herdr`: the GIF shows herdr above the panel, the two following each other.
+struct Scene {
+    name: &'static str,
+    ms: u64,
+    herdr: bool,
+    pet: Pet,
+    world: fn() -> World,
+    beats: &'static [(u64, Beat)],
+    /// What changes by itself as the scene goes on: a context that climbs.
+    drift: fn(&mut World, u64),
+}
+
+/// An everyday afternoon: most agents idle, two at work.
+fn calm_world() -> World {
+    World {
+        agents: vec![
+            agent("web", "2", Status::Working, "opus", Effort::XHigh, 104_000, 1_000_000),
+            agent("api", "1", Status::Idle, "opus", Effort::High, 38_000, 1_000_000),
+            agent("docs", "1", Status::Idle, "fable", Effort::High, 12_000, 1_000_000),
+            agent("infra", "3", Status::Idle, "opus", Effort::Med, 220_000, 1_000_000),
+            agent("parser", "1", Status::Working, "fable", Effort::XHigh, 460_000, 1_000_000),
+            agent("design", "1", Status::Idle, "opus", Effort::High, 70_000, 1_000_000),
+        ],
+        focused: 0,
+    }
+}
+
+/// The same afternoon, the agent in front of you done with its turn (so the menu has everything to offer).
+fn calm_world_at_rest() -> World {
+    let mut w = calm_world();
+    w.agents[0].status = Status::Idle;
+    w
+}
+
+fn still(_: &mut World, _: u64) {}
+
+/// The first agent's context climbs while it works: 104K to about 210K over the first 4 s.
+fn climbing(w: &mut World, t: u64) {
+    if w.agents[0].status == Status::Working {
+        w.agents[0].ctx_used = 104_000 + (t.min(4_000) / 200) as u32 * 5_300;
+    }
+}
+
+const fn row(show: Show, style: Style) -> Row {
+    Row { show, style }
+}
+
+const DEFAULT_ROWS: [Row; 2] = [row(Show::Model, Style::Plain), row(Show::Context, Style::Plain)];
+const PET_ROWS: [Row; 2] = [row(Show::Model, Style::Plain), row(Show::Tokens, Style::Plain)];
+/// The strip in the README's GIFs: small blocks, spaced.
+const SMALL: Blocks = Blocks { size: 2, gap: true };
+const CHUNKY: Blocks = Blocks { size: 4, gap: true };
+const MEDIUM_TOUCHING: Blocks = Blocks { size: 3, gap: false };
+
+/// The README's GIFs, one per feature.
+const SCENES: &[Scene] = &[
+    // The knob moves herdr's focus to the next agent; then the focus moves back in herdr, from the keyboard, and
+    // the panel follows. It ends where it starts, so it loops without a jump.
+    Scene {
+        name: "agents",
+        ms: 8_400,
+        herdr: true,
+        pet: Pet::Off,
+        world: calm_world,
+        beats: &[
+            (1_600, Beat::Press(Input::KnobCw)),
+            (3_200, Beat::Press(Input::KnobPush)),
+            (4_800, Beat::Focus(0)),
+        ],
+        drift: still,
+    },
+    Scene {
+        name: "status",
+        ms: 6_000,
+        herdr: true,
+        pet: Pet::Off,
+        world: calm_world,
+        beats: &[(1_800, Beat::Status(4, Status::Blocked)), (4_200, Beat::Status(0, Status::Done))],
+        drift: climbing,
+    },
+    Scene {
+        name: "effort-and-model",
+        ms: 7_400,
+        herdr: false,
+        pet: Pet::Off,
+        world: calm_world,
+        beats: &[
+            (500, Beat::Press(Input::Right)),
+            (1_000, Beat::Press(Input::Right)),
+            (4_000, Beat::Press(Input::Middle)),
+            (4_800, Beat::Press(Input::Middle)),
+        ],
+        drift: still,
+    },
+    Scene {
+        name: "quick-actions",
+        ms: 5_600,
+        herdr: false,
+        pet: Pet::Off,
+        world: calm_world_at_rest,
+        beats: &[
+            (400, Beat::Press(Input::KnobPush)),
+            (1_200, Beat::Press(Input::Right)),
+            (1_900, Beat::Press(Input::KnobCw)),
+            (2_600, Beat::Press(Input::KnobCw)),
+            (3_200, Beat::Press(Input::Right)),
+            (3_800, Beat::Press(Input::KnobCw)),
+            (4_300, Beat::Press(Input::Middle)),
+            (5_300, Beat::Press(Input::KnobPush)),
+        ],
+        drift: still,
+    },
+    Scene {
+        name: "customize",
+        ms: 6_200,
+        herdr: false,
+        pet: Pet::Off,
+        world: calm_world,
+        beats: &[
+            // The settings screen, to STYLE 1, where each press is previewed live.
+            (200, Beat::Press(Input::KnobLong)),
+            (400, Beat::Press(Input::KnobCw)),
+            (550, Beat::Press(Input::KnobCw)),
+            (700, Beat::Press(Input::KnobCw)),
+            (1_300, Beat::Press(Input::Right)),
+            (1_900, Beat::Press(Input::Right)),
+            (2_500, Beat::Press(Input::Right)),
+            (3_100, Beat::Press(Input::KnobPush)),
+            (4_100, Beat::Layout([row(Show::Limit5h, Style::Card), row(Show::Cost, Style::Plain)], CHUNKY)),
+            (5_100, Beat::Layout([row(Show::Name, Style::Plain), row(Show::Tokens, Style::Tint)], MEDIUM_TOUCHING)),
+        ],
+        drift: still,
+    },
+    Scene {
+        name: "pet",
+        ms: 10_400,
+        herdr: false,
+        pet: Pet::Mint,
+        world: calm_world,
+        beats: &[
+            (3_000, Beat::Status(0, Status::Blocked)),
+            (5_000, Beat::Status(0, Status::Done)),
+            (6_800, Beat::Status(0, Status::Idle)),
+        ],
+        drift: climbing,
+    },
+];
+
+/// How herdr stands at one frame, as a line of JSON for `docs/gif.py` to draw herdr from: the focus, every agent,
+/// and what was last done and where (the knob or a button on the panel, the keyboard in herdr), for a moment after.
+fn herdr_state(world: &World, t: u64, last: Option<(&str, u64)>) -> String {
+    let agents: Vec<String> = world
+        .agents
+        .iter()
+        .map(|a| {
+            let status = format!("{:?}", a.status).to_lowercase();
+            format!(
+                r#"{{"space":"{}","tab":"{}","dir":"{}","status":"{status}","model":"{}","effort":"{}","used":{},"window":{}}}"#,
+                a.space,
+                a.tab,
+                a.dir,
+                a.model.word(),
+                a.effort.word(),
+                a.ctx_used,
+                a.ctx_window
+            )
+        })
+        .collect();
+    let cue = last.filter(|&(_, at)| t.saturating_sub(at) < 900).map_or("null".into(), |(what, _)| format!(r#""{what}""#));
+    format!(r#"{{"t":{t},"focused":{},"cue":{cue},"agents":[{}]}}"#, world.focused, agents.join(","))
+}
+
+/// The README's GIFs: `--showcase DIR` writes, for every scene, `DIR/<name>.rgb`: every 40 ms frame of it, 52x16
+/// RGB bytes each; and for a scene that shows herdr too, `DIR/<name>.jsonl`, how herdr stands at each frame.
+fn showcase(dir: &str) {
+    std::fs::create_dir_all(dir).expect("make the showcase directory");
+    for scene in SCENES {
+        let (mut world, mut ui, mut host, mut frame) = ((scene.world)(), Ui::new(), FakeHost::default(), Frame::new());
+        ui.info = demo_info();
+        (ui.settings.pet, ui.settings.blocks) = (scene.pet, SMALL);
+        ui.settings.rows = if scene.pet == Pet::Off { DEFAULT_ROWS } else { PET_ROWS };
+        let (mut bytes, mut states, mut last) = (Vec::new(), String::new(), None);
+        let mut beats = scene.beats.iter().peekable();
+        for t in (0..scene.ms).step_by(40) {
+            while let Some(&(_, beat)) = beats.next_if(|(at, _)| *at <= t) {
+                match beat {
+                    Beat::Press(input) => {
+                        let knob = matches!(input, Input::KnobCw | Input::KnobCcw | Input::KnobPush | Input::KnobLong);
+                        last = Some((if knob { "knob" } else { "button" }, t));
+                        if let Some(intent) = ui.input(&world, input, t) {
+                            host.send(intent, t);
+                        }
+                    }
+                    Beat::Focus(agent) => {
+                        world.focused = agent;
+                        last = Some(("keyboard", t));
+                    }
+                    Beat::Status(agent, status) => world.agents[agent].status = status,
+                    Beat::Layout(rows, blocks) => (ui.settings.rows, ui.settings.blocks) = (rows, blocks),
+                }
+            }
+            (scene.drift)(&mut world, t);
+            host.step(&mut world, t);
+            if let Some(intent) = ui.tick(&world, t) {
+                host.send(intent, t);
+            }
+            ui.render(&world, t, &mut frame);
+            bytes.extend(frame.pixels().iter().flat_map(|p| [p.0, p.1, p.2]));
+            if scene.herdr {
+                states.push_str(&herdr_state(&world, t, last));
+                states.push('\n');
+            }
+        }
+        std::fs::write(format!("{dir}/{}.rgb", scene.name), bytes).expect("write a scene");
+        if scene.herdr {
+            std::fs::write(format!("{dir}/{}.jsonl", scene.name), states).expect("write herdr's side");
+        }
+    }
+}
+
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(i) = args.iter().position(|a| a == "--showcase") {
+        return showcase(&args[i + 1]);
+    }
+    if args.iter().any(|a| a == "--dump") {
+        return dump();
+    }
+    if let Some(i) = args.iter().position(|a| a == "--reel") {
+        let rows = match args.get(i + 3).map(String::as_str) {
+            Some("tokens") => Some([Row { show: Show::Model, style: Style::Plain }, Row { show: Show::Tokens, style: Style::Plain }]),
+            Some("name") => Some([Row { show: Show::Name, style: Style::Plain }, Row { show: Show::Model, style: Style::Plain }]),
+            Some("cost") => Some([Row { show: Show::Cost, style: Style::Plain }, Row { show: Show::Context, style: Style::Plain }]),
+            Some("cards") => Some([Row { show: Show::Model, style: Style::Card }, Row { show: Show::Context, style: Style::Tint }]),
+            _ => None,
+        };
+        return reel(pet_arg(&args[i + 1]), &args[i + 2], rows);
+    }
+
+    let (ww, wh) = (W * CELL, H * CELL);
+    let mut window = Window::new(
+        "herdr-deck-sim   knob: up/down/wheel + enter (hold: settings)   effort: left/right   model: space   B status",
+        ww,
+        wh,
+        WindowOptions::default(),
+    )
+    .expect("open window");
+    window.set_target_fps(60);
+
+    // One LED: a disc with a little dark surround, like pixels behind the diffuser.
+    let r = CELL as f32 / 2.0 - 1.5;
+    let mask: Vec<bool> = (0..CELL * CELL)
+        .map(|i| {
+            let (dx, dy) = ((i % CELL) as f32 + 0.5 - CELL as f32 / 2.0, (i / CELL) as f32 + 0.5 - CELL as f32 / 2.0);
+            dx * dx + dy * dy <= r * r
+        })
+        .collect();
+
+    let (mut world, mut ui, mut host, mut frame) = (demo_world(), Ui::new(), FakeHost::default(), Frame::new());
+    ui.info = demo_info();
+    if let Some(i) = args.iter().position(|a| a == "--pet") {
+        ui.settings.pet = pet_arg(&args[i + 1]);
+    }
+    let mut power = Power { percent: Some(87), millivolts: Some(4160), on_usb: Some(true) };
+    ui.set_power(power, 0);
+    let mut buf = vec![0u32; ww * wh];
+    let start = Instant::now();
+    let mut wheel = 0.0f32;
+    let mut enter_down: Option<(u64, bool)> = None;
+
+    while window.is_open() && !window.is_key_down(Key::Escape) {
+        let now = start.elapsed().as_millis() as u64;
+        let mut inputs = Vec::new();
+        // Arrow keys auto-repeat so holding one behaves like spinning the knob. Left and right repeat as the
+        // device repeats its buttons: the first report of a key is the press, the rest say it is still down.
+        let pressed = window.get_keys_pressed(KeyRepeat::No);
+        for key in window.get_keys_pressed(KeyRepeat::Yes) {
+            match key {
+                Key::Up => inputs.push(Input::KnobCcw),
+                Key::Down => inputs.push(Input::KnobCw),
+                Key::Left if !pressed.contains(&key) => inputs.push(Input::LeftHeld),
+                Key::Right if !pressed.contains(&key) => inputs.push(Input::RightHeld),
+                _ => {}
+            }
+        }
+        for key in window.get_keys_pressed(KeyRepeat::No) {
+            match key {
+                Key::Left => inputs.push(Input::Left),
+                Key::Right => inputs.push(Input::Right),
+                Key::Space => inputs.push(Input::Middle),
+                Key::P => {
+                    power.on_usb = power.on_usb.map(|usb| !usb);
+                    if power.on_usb == Some(false) {
+                        power.percent = power.percent.map(|p| p.saturating_sub(15));
+                        power.millivolts = power.percent.map(|p| 3500 + p as u16 * 7);
+                    }
+                    ui.set_power(power, now);
+                }
+                Key::B => {
+                    let i = world.focused;
+                    world.agents[i].status = next_status(world.agents[i].status);
+                }
+                _ => {}
+            }
+        }
+        // Enter is the knob's push: short on release, long-press once it has been held 600 ms.
+        match (window.is_key_down(Key::Enter), enter_down) {
+            (true, None) => enter_down = Some((now, false)),
+            (true, Some((since, false))) if now - since >= 600 => {
+                enter_down = Some((since, true));
+                inputs.push(Input::KnobLong);
+            }
+            (false, Some((_, long))) => {
+                enter_down = None;
+                if !long {
+                    inputs.push(Input::KnobPush);
+                }
+            }
+            _ => {}
+        }
+        if let Some((_, dy)) = window.get_scroll_wheel() {
+            wheel += dy;
+            while wheel.abs() >= 1.0 {
+                inputs.push(if wheel > 0.0 { Input::KnobCcw } else { Input::KnobCw });
+                wheel -= wheel.signum();
+            }
+        }
+
+        for input in inputs {
+            if let Some(intent) = ui.input(&world, input, now) {
+                host.send(intent, now);
+            }
+        }
+        host.step(&mut world, now);
+        if let Some(intent) = ui.tick(&world, now) {
+            host.send(intent, now);
+        }
+        ui.render(&world, now, &mut frame);
+
+        for (i, led) in frame.pixels().iter().enumerate() {
+            let (px, py) = ((i % W) * CELL, (i / W) * CELL);
+            let lit = if *led == herdr_deck_render::Rgb::OFF {
+                0x181818
+            } else {
+                let [r, g, b] = seen(*led);
+                (r as u32) << 16 | (g as u32) << 8 | b as u32
+            };
+            for (m, on) in mask.iter().enumerate() {
+                buf[(py + m / CELL) * ww + px + m % CELL] = if *on { lit } else { 0x0c0c0c };
+            }
+        }
+        window.update_with_buffer(&buf, ww, wh).expect("present frame");
+    }
+}

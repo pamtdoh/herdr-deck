@@ -1,5 +1,9 @@
 # Pixbar × herdr — research findings
 
+> **Written before the rename:** the project was called pixbar then, so the names here are the old ones
+> (`pixbar-bridge` is `herdr-deck` now, `pixbar-device` is `herdr-deck-device`, `/data/pixbar.conf` is
+> `/data/herdr-deck.conf`).
+>
 > **A lab notebook, not documentation.** Written on 2026-09-19 for its author, before and while the first version was
 > built: one person's TC002, machine, herdr 0.8.2 and Claude Code 2.1.277. It records what was measured and why
 > things were decided as they were, and later sections correct earlier ones. Where it and the code disagree, the
