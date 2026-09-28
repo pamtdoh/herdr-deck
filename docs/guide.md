@@ -313,14 +313,11 @@ effort buttons, space is the middle one, B cycles the focused agent's status, P 
 `--pet mint` starts it with the dango.
 
 Without a window: `--dump` prints a scripted session as text frames, `--reel mint out.rgb` records the dango
-through an afternoon of its agent, and `--showcase DIR` records the README's GIFs, a scene per feature, which
-`python3 docs/gif.py DIR docs/gifs` (Pillow) turns into `docs/gifs/*.gif`. The scenes are `SCENES` in
+through an afternoon of its agent, and `--showcase DIR` records the README's animations, a scene per
+feature, which `python3 docs/demos.py DIR docs/demos` (Pillow) turns into `docs/demos/*.webp`: animated WebP, which
+a README plays like a GIF, at twice the size it is shown for sharp screens. The scenes are `SCENES` in
 `crates/herdr-deck-sim/src/main.rs`; for the ones that show herdr above the panel it also writes herdr's state at every
-frame, from which `docs/gif.py` draws herdr (made-up agents; a monospace font such as Menlo or DejaVu Sans Mono).
-
-The window and the GIFs show the LEDs as bright as they look rather than the values they are given: the panel's
-driver lifts anything lit to at least a fifth of full drive, and the eye sees light on a curve, so a block at a
-quarter of full brightness looks about two thirds as bright.
+frame, from which `docs/demos.py` draws herdr (made-up agents; a monospace font such as Menlo or DejaVu Sans Mono).
 
 ## Where things came from
 

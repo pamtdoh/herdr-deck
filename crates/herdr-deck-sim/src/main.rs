@@ -10,10 +10,10 @@
 //! with `HERDR_DECK_DUMP_DIR=<dir>` it also writes each frame as a colour PPM.
 //!
 //! `herdr-deck-sim --pet mint` starts with the dango in that colour (`mint`, `pink`, `peach`, `lemon`, `sky`, `lilac`).
-//! `herdr-deck-sim --showcase DIR` records the README's GIFs, a scene per feature (`docs/gif.py` makes the GIFs).
+//! `herdr-deck-sim --showcase DIR` records the README's animations, a scene per feature (`docs/demos.py` draws them).
 //! `herdr-deck-sim --reel mint out.rgb [tokens|name|cost|cards]` plays a scripted afternoon of the focused agent (working while its context grows and fills, blocked for long enough to
 //! get cross, done, compacted, idle, the focus moving away and back, working again) and writes every 40 ms frame to
-//! `out.rgb`, 52x16 RGB bytes each, for turning into a GIF.
+//! `out.rgb`, 52x16 RGB bytes each, for turning into an animation.
 
 use std::time::Instant;
 
@@ -304,19 +304,6 @@ fn dump() {
     }
 }
 
-/// An LED as bright as it looks rather than the value it was given: the panel's driver lifts anything lit into
-/// 50..=255 (it shows nothing below 50), and the eye sees light on a curve (gamma 2.2), so a block at a quarter of
-/// full brightness looks about two thirds as bright, not a quarter. Its hue is kept: lifted channel by channel,
-/// colours wash out on a screen far more than they do on the panel's LEDs.
-fn seen(led: herdr_deck_render::Rgb) -> [u8; 3] {
-    let top = led.0.max(led.1).max(led.2) as f32;
-    if top == 0.0 {
-        return [0, 0, 0];
-    }
-    let looks = 255.0 * ((50.0 + (top - 1.0) * 205.0 / 254.0) / 255.0).powf(1.0 / 2.2);
-    [led.0, led.1, led.2].map(|v| (v as f32 * looks / top).round() as u8)
-}
-
 /// Plain PPM at 12 px per LED with a 2 px dark gap, enough to judge colours and legibility.
 fn write_ppm(frame: &Frame, path: &str) {
     const S: usize = 12;
@@ -326,7 +313,7 @@ fn write_ppm(frame: &Frame, path: &str) {
             let led = frame.pixels()[(y / S) * W + x / S];
             let gap = x % S >= S - 2 || y % S >= S - 2;
             let off = led == herdr_deck_render::Rgb::OFF;
-            out.extend_from_slice(&if gap { [10, 10, 10] } else if off { [22, 22, 22] } else { seen(led) });
+            out.extend_from_slice(&if gap { [10, 10, 10] } else if off { [22, 22, 22] } else { [led.0, led.1, led.2] });
         }
     }
     std::fs::write(path, out).expect("write ppm");
@@ -384,7 +371,7 @@ fn reel(pet: Pet, out: &str, rows: Option<[Row; 2]>) {
     std::fs::write(out, bytes).expect("write reel");
 }
 
-/// Something that happens in one of the README's GIFs.
+/// Something that happens in one of the README's animations.
 #[derive(Clone, Copy)]
 enum Beat {
     Press(Input),
@@ -396,8 +383,8 @@ enum Beat {
     Layout([Row; 2], Blocks),
 }
 
-/// One feature, shown for `ms` in a GIF of its own (`name`): the agents it starts with, and what happens.
-/// `herdr`: the GIF shows herdr above the panel, the two following each other.
+/// One feature, shown for `ms` in an animation of its own (`name`): the agents it starts with, and what happens.
+/// `herdr`: the animation shows herdr above the panel, the two following each other.
 struct Scene {
     name: &'static str,
     ms: u64,
@@ -446,12 +433,12 @@ const fn row(show: Show, style: Style) -> Row {
 
 const DEFAULT_ROWS: [Row; 2] = [row(Show::Model, Style::Plain), row(Show::Context, Style::Plain)];
 const PET_ROWS: [Row; 2] = [row(Show::Model, Style::Plain), row(Show::Tokens, Style::Plain)];
-/// The strip in the README's GIFs: small blocks, spaced.
+/// The strip in the README's animations: small blocks, spaced.
 const SMALL: Blocks = Blocks { size: 2, gap: true };
 const CHUNKY: Blocks = Blocks { size: 4, gap: true };
 const MEDIUM_TOUCHING: Blocks = Blocks { size: 3, gap: false };
 
-/// The README's GIFs, one per feature.
+/// The README's animations, one per feature.
 const SCENES: &[Scene] = &[
     // The knob moves herdr's focus to the next agent; then the focus moves back in herdr, from the keyboard, and
     // the panel follows. It ends where it starts, so it loops without a jump.
@@ -545,7 +532,7 @@ const SCENES: &[Scene] = &[
     },
 ];
 
-/// How herdr stands at one frame, as a line of JSON for `docs/gif.py` to draw herdr from: the focus, every agent,
+/// How herdr stands at one frame, as a line of JSON for `docs/demos.py` to draw herdr from: the focus, every agent,
 /// and what was last done and where (the knob or a button on the panel, the keyboard in herdr), for a moment after.
 fn herdr_state(world: &World, t: u64, last: Option<(&str, u64)>) -> String {
     let agents: Vec<String> = world
@@ -569,7 +556,7 @@ fn herdr_state(world: &World, t: u64, last: Option<(&str, u64)>) -> String {
     format!(r#"{{"t":{t},"focused":{},"cue":{cue},"agents":[{}]}}"#, world.focused, agents.join(","))
 }
 
-/// The README's GIFs: `--showcase DIR` writes, for every scene, `DIR/<name>.rgb`: every 40 ms frame of it, 52x16
+/// The README's animations: `--showcase DIR` writes, for every scene, `DIR/<name>.rgb`: every 40 ms frame of it, 52x16
 /// RGB bytes each; and for a scene that shows herdr too, `DIR/<name>.jsonl`, how herdr stands at each frame.
 fn showcase(dir: &str) {
     std::fs::create_dir_all(dir).expect("make the showcase directory");
@@ -741,8 +728,7 @@ fn main() {
             let lit = if *led == herdr_deck_render::Rgb::OFF {
                 0x181818
             } else {
-                let [r, g, b] = seen(*led);
-                (r as u32) << 16 | (g as u32) << 8 | b as u32
+                (led.0 as u32) << 16 | (led.1 as u32) << 8 | led.2 as u32
             };
             for (m, on) in mask.iter().enumerate() {
                 buf[(py + m / CELL) * ww + px + m % CELL] = if *on { lit } else { 0x0c0c0c };

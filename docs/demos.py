@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
-"""The README's GIFs, made from the simulator's frames:
+"""The README's animations, made from the simulator's frames:
 
     cargo run -p herdr-deck-sim -- --showcase /tmp/herdr-deck
-    python3 docs/gif.py /tmp/herdr-deck docs/gifs
+    python3 docs/demos.py /tmp/herdr-deck docs/demos
 
 The simulator writes a file per feature, each frame 52x16 RGB bytes, one every 40 ms; this draws each as the panel
-looks (round LEDs behind a dark face, lit as the eye sees them, the unlit ones faintly there; square, so that it
-sits as well on a light page as on a dark one) and writes a GIF of the same name. Where the simulator also wrote how herdr stands at each
-frame (`<name>.jsonl`), herdr is drawn above the panel: its agents with their status, the focused one's Claude
-Code session and its status line, the two following each other. Its agents and sessions are made up.
+looks (round LEDs behind a dark face, the unlit ones faintly there; square, so that it sits as well on a light page
+as on a dark one) and writes an animated WebP of the same name: it plays and loops in a README like a GIF, with
+every colour instead of 256, and it is drawn at twice the size the README shows it at, for screens with twice the
+pixels. Where the simulator also wrote how herdr stands at each frame (`<name>.jsonl`), herdr is drawn above the
+panel: its agents with their status, the focused one's Claude Code session and its status line, the two following
+each other. Its agents and sessions are made up.
 
 Needs Pillow, and for herdr a monospace font with Claude Code's marks (Menlo on macOS, DejaVu Sans Mono on Linux).
 """
@@ -18,6 +20,7 @@ import sys
 
 from PIL import Image, ImageDraw, ImageFont
 
+S = 2  # device pixels per README pixel; everything below is laid out in README pixels
 W, H = 52, 16
 LED = 12  # pixels per LED
 PAD = 14  # face around the matrix
@@ -51,13 +54,48 @@ def mono(size):
         "/usr/share/fonts/dejavu/DejaVuSansMono.ttf",
     ):
         try:
-            return ImageFont.truetype(path, size)
+            return ImageFont.truetype(path, size * S)
         except OSError:
             pass
-    return ImageFont.load_default(size=size)
+    return ImageFont.load_default(size=size * S)
 
 
 FONT, SMALL = mono(12), mono(10)
+
+
+def canvas(w, h, fill):
+    return Image.new("RGB", (w * S, h * S), fill)
+
+
+class Draw:
+    """ImageDraw taking README pixels: a box covers the device pixels of every README pixel in it."""
+
+    def __init__(self, img):
+        self.d = ImageDraw.Draw(img)
+
+    @staticmethod
+    def box(b):
+        x0, y0, x1, y1 = b
+        return [x0 * S, y0 * S, x1 * S + S - 1, y1 * S + S - 1]
+
+    def rectangle(self, b, fill=None, outline=None, width=1):
+        self.d.rectangle(self.box(b), fill=fill, outline=outline, width=width * S)
+
+    def rounded_rectangle(self, b, radius, fill=None):
+        self.d.rounded_rectangle(self.box(b), radius=radius * S, fill=fill)
+
+    def ellipse(self, b, fill=None, outline=None, width=1):
+        self.d.ellipse(self.box(b), fill=fill, outline=outline, width=width * S)
+
+    def line(self, b, fill):
+        """Across or down only."""
+        self.rectangle(b, fill=fill)
+
+    def text(self, xy, text, font, fill, anchor=None):
+        self.d.text((xy[0] * S, xy[1] * S), text, font=font, fill=fill, anchor=anchor)
+
+    def textlength(self, text, font):
+        return self.d.textlength(text, font=font) / S
 
 
 def frames(path):
@@ -66,27 +104,15 @@ def frames(path):
     return [data[i:i + size] for i in range(0, len(data), size)]
 
 
-def seen(c):
-    """An LED as bright as it looks rather than the value it was given: the panel's driver lifts anything lit into
-    50..255 (it shows nothing below 50), and the eye sees light on a curve (gamma 2.2), so a block at a quarter of
-    full brightness looks about two thirds as bright, not a quarter. Its hue is kept: lifted channel by channel,
-    colours wash out on a screen far more than they do on the panel's LEDs."""
-    top = max(c)
-    if top == 0:
-        return UNLIT
-    looks = 255 * ((50 + (top - 1) * 205 / 254) / 255) ** (1 / 2.2)
-    return tuple(round(v * looks / top) for v in c)
-
-
 def panel(frame):
-    img = Image.new("RGB", (PANEL_W, PANEL_H), FACE)
-    d = ImageDraw.Draw(img)
+    img = canvas(PANEL_W, PANEL_H, FACE)
+    d = Draw(img)
     for y in range(H):
         for x in range(W):
             i = (y * W + x) * 3
             c = tuple(frame[i:i + 3])
             x0, y0 = PAD + x * LED, PAD + y * LED
-            d.ellipse([x0 + 1, y0 + 1, x0 + LED - 2, y0 + LED - 2], fill=seen(c))
+            d.ellipse([x0 + 1, y0 + 1, x0 + LED - 2, y0 + LED - 2], fill=UNLIT if c == (0, 0, 0) else c)
     return img
 
 
@@ -102,8 +128,8 @@ def badge(d, x, y, text):
 
 
 def herdr(state):
-    img = Image.new("RGB", (PANEL_W, HERDR_H), BG)
-    d = ImageDraw.Draw(img)
+    img = canvas(PANEL_W, HERDR_H, BG)
+    d = Draw(img)
     agents, focused, t = state["agents"], state["focused"], state["t"]
 
     # The sidebar: every agent, its status, the focused one lit.
@@ -180,12 +206,24 @@ def herdr(state):
 
 
 def both(state, frame):
-    img = Image.new("RGB", (PANEL_W, HERDR_H + GAP + PANEL_H), BG)
+    img = canvas(PANEL_W, HERDR_H + GAP + PANEL_H, BG)
     img.paste(herdr(state), (0, 0))
-    img.paste(panel(frame), (0, HERDR_H + GAP))
+    img.paste(panel(frame), (0, (HERDR_H + GAP) * S))
     if state["cue"] in ("knob", "button"):
-        badge(ImageDraw.Draw(img), PANEL_W - 16, HERDR_H + GAP + PANEL_H - 22, state["cue"])
+        badge(Draw(img), PANEL_W - 16, HERDR_H + GAP + PANEL_H - 22, state["cue"])
     return img
+
+
+def save(imgs, path):
+    """One frame for every run of equal ones, shown for as long as the run lasts."""
+    kept, durations = [], []
+    for img in imgs:
+        if kept and img.tobytes() == kept[-1].tobytes():
+            durations[-1] += 40
+        else:
+            kept.append(img)
+            durations.append(40)
+    kept[0].save(path, save_all=True, append_images=kept[1:], duration=durations, loop=0, lossless=True, method=4)
 
 
 def main(src, out):
@@ -198,7 +236,7 @@ def main(src, out):
             imgs = [both(json.loads(line), f) for line, f in zip(states.read_text().splitlines(), fs)]
         else:
             imgs = [panel(f) for f in fs]
-        imgs[0].save(out / (scene.stem + ".gif"), save_all=True, append_images=imgs[1:], duration=40, loop=0, optimize=True)
+        save(imgs, out / (scene.stem + ".webp"))
 
 
 if __name__ == "__main__":

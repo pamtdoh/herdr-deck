@@ -14,7 +14,7 @@ One block per agent down the left, coloured by what it is doing: blue idle, oran
 done. Turn the knob and herdr's focus moves to the next one, like Tab; the panel shows its name, then its model,
 effort and context. It works the other way round too: move the focus in herdr and the panel follows.
 
-<img src="docs/gifs/agents.gif" width="652" alt="herdr above, the panel below. The knob turns to the next agent and herdr's focus follows to it; then the focus moves back in herdr from the keyboard and the panel follows">
+<img src="docs/demos/agents.webp" width="652" alt="herdr above, the panel below. The knob turns to the next agent and herdr's focus follows to it; then the focus moves back in herdr from the keyboard and the panel follows">
 
 ### Follow them live
 
@@ -22,7 +22,7 @@ Model, effort and context come straight from Claude Code's status line as they c
 climb while an agent works. The ones that need you, blocked or done and not looked at yet, breathe in the strip
 until you get to them.
 
-<img src="docs/gifs/status.gif" width="652" alt="herdr above, the panel below. The context climbs on both while the agent works; another agent gets blocked, pink in herdr and red in the strip; the first finishes, green on both">
+<img src="docs/demos/status.webp" width="652" alt="herdr above, the panel below. The context climbs on both while the agent works; another agent gets blocked, pink in herdr and red in the strip; the first finishes, green on both">
 
 ### Change effort and model with a press
 
@@ -30,28 +30,29 @@ Left and right step the effort from low to max and on to ultracode. The middle b
 Fable, or whichever models you list; since a switch has the whole context read again, it asks for a second press
 first.
 
-<img src="docs/gifs/effort-and-model.gif" width="652" alt="The effort rail going up to MAX and on to ULTRA with its violet ripple, then a switch to Fable, asked and confirmed">
+<img src="docs/demos/effort-and-model.webp" width="652" alt="The effort rail going up to MAX and on to ULTRA with its violet ripple, then a switch to Fable, asked and confirmed">
 
 ### Quick actions from a menu
 
 Push the knob for a menu on the agent in front of you: compact or clear the conversation, rename its herdr tab,
 split its pane right or down, close the tab or the pane. What cannot be taken back asks for a second press.
 
-<img src="docs/gifs/quick-actions.gif" width="652" alt="The menu turning through compact, clear, rename tab, split right and down, and close tab, which turns red and waits for a second press">
+<img src="docs/demos/quick-actions.webp" width="652" alt="The menu turning through compact, clear, rename tab, split right and down, and close tab, which turns red and waits for a second press">
 
 ### Make it yours
 
 Pick what the two rows show (model and effort, context, the session's name, the account's 5-hour or 7-day usage,
 the cost), how each row is drawn, how big the blocks are and how bright, all in the settings on the panel itself.
 
-<img src="docs/gifs/customize.gif" width="652" alt="The settings screen trying the top row's styles live, then two other layouts: a usage card over the cost with big blocks, and a name over a tinted context with touching blocks">
+<img src="docs/demos/customize.webp" width="652" alt="The settings screen trying the top row's styles live, then two other layouts: a usage card over the cost with big blocks, and a name over a tinted context with touching blocks">
 
-### Bonus: a pet
+### Adopt a dango
 
-Turn on the dango and it lives in the screen's dark corners, acting out the agent in front of you: humming while
-it works, munching as the context grows, startled when it is blocked, beaming when it is done, asleep when it idles.
+A round little dumpling moves into the panel's dark corners and acts out the agent in front of you: it hums while
+the agent works, munches as the context grows, startles when it is blocked, beams when it is done and falls asleep
+when it idles. Pick its colour in the settings, or leave it off.
 
-<img src="docs/gifs/pet.gif" width="652" alt="A small mint dango sliding beside the context, turning red and startled when the agent is blocked, lighting up when it is done, falling asleep when it idles">
+<img src="docs/demos/pet.webp" width="652" alt="A small mint dango sliding beside the context, turning red and startled when the agent is blocked, lighting up when it is done, falling asleep when it idles">
 
 ## Requirements
 
