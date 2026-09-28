@@ -31,6 +31,8 @@ const TALL: Shape = shape(9, 7, 0.0);
 const STRIDE: [Shape; 4] = [shape(9, 6, 0.5), shape(10, 6, 1.0), shape(11, 5, 1.0), shape(10, 5, 0.5)];
 /// Where a row stops following the dome and flattens out towards the base, from the bottom (0) to the top (1).
 const BASE: f32 = 0.3;
+/// Asleep, melted flat: breathing out, breathing in.
+const SLEEP: [Shape; 2] = [shape(12, 3, 0.0), shape(11, 4, 0.0)];
 /// Coming down from a hop: flat, then a wobble back to round.
 const LANDING: [(u64, Shape); 3] = [(80, shape(12, 4, 0.0)), (160, shape(11, 5, 0.0)), (240, shape(10, 5, 0.0))];
 
@@ -158,7 +160,7 @@ pub(super) fn look(p: &PetState, now: u64) -> Look {
     }
     if let Act::Sleep { since } = p.act {
         // Melted flat, breathing slowly.
-        let s = if now.saturating_sub(since) % 3000 < 1500 { shape(12, 3, 0.0) } else { shape(11, 4, 0.0) };
+        let s = SLEEP[(now.saturating_sub(since) % 3000 >= 1500) as usize];
         return Look::new(s, Eyes::Shut).with(Emote::Zzz, now.saturating_sub(since));
     }
     let since_status = now.saturating_sub(p.status_since);
@@ -285,8 +287,12 @@ pub(super) fn draw(p: &PetState, f: &mut Frame, now: u64, own: Rgb) {
         Act::Sleep { .. } => own.scale(0.6),
         _ => own,
     };
-    let (edges, top) = paint(f, p.x, p.y + MH - 1, p.facing, p.free, &l, color);
+    let ground = p.y + MH - 1;
+    let (edges, top) = paint(f, p.x, ground, p.facing, p.free, &l, color);
     if let Some((e, age)) = l.emote {
+        // Zs rise from where it lies, not from its breathing outline: that changes with every breath, and the way
+        // up with it. From its box, level with the top of an in-breath.
+        let (edges, top) = if e == Emote::Zzz { ((p.x, p.x + MW - 1), ground - SLEEP[1].h + 1) } else { (edges, top) };
         balloon(f, &p.room, e, edges, top, age, now);
     }
 }
@@ -311,7 +317,7 @@ pub(super) fn preview(f: &mut Frame, x: i32, bottom: i32, now: u64, own: Rgb) {
         11 => Look::new(shape(9, 6, if beat(150) { 1.5 } else { -1.5 }), Eyes::Dot).gazing(wander(now, 110, &ROLL)).with(Emote::Stars, t),
         12 => Look::new(shape(9, 6, if beat(500) { 1.0 } else { -1.0 }), Eyes::Open).gazing(wander(now, 250, &WONDER)).with(Emote::Question, t),
         13 => Look::new(TALL, Eyes::Shut),
-        _ => Look::new(if now % 3000 < 1500 { shape(12, 3, 0.0) } else { shape(11, 4, 0.0) }, Eyes::Shut).with(Emote::Zzz, now % 2400),
+        _ => Look::new(SLEEP[(now % 3000 >= 1500) as usize], Eyes::Shut).with(Emote::Zzz, now % 2400),
     };
     let color = match i {
         6 | 7 => mix(own, RED, pulse(now, ALARM_MS)),

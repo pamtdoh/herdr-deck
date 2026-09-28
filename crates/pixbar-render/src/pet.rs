@@ -869,6 +869,30 @@ mod tests {
         }
     }
 
+    /// Asleep in the corner beside `12%`, it breathes in and out, and its outline with it; its Zs keep to the one
+    /// way up all the same.
+    #[test]
+    fn a_sleeping_dangos_zs_keep_their_way_up_while_it_breathes() {
+        let mut p = PetState::new(true, 0);
+        for row in &mut p.room.0[9..14] {
+            *row |= ((1u64 << 40) - 1) & !((1u64 << 29) - 1);
+        }
+        (p.x, p.y, p.act, p.mood) = (42, H as i32 - MH, Act::Sleep { since: 0 }, Mood::Sleepy);
+        p.free = p.room.around(p.x, p.y);
+        let zs = |now: u64| {
+            let mut f = Frame::new();
+            p.draw(&mut f, now, Pet::Mint.rgb());
+            // The body is mint (green on top), the Zs lavender (blue on top).
+            (0..H as i32).flat_map(|y| (0..W as i32).map(move |x| (x, y))).filter(|&(x, y)| f.get(x, y).2 > f.get(x, y).1).collect::<Vec<_>>()
+        };
+        // The same moment of the Zs' round (both of them up), breathing in and breathing out.
+        let first = zs(2700);
+        assert!(!first.is_empty());
+        for now in (2..6).map(|round| 300 + round * 2400) {
+            assert_eq!(zs(now), first, "at {now} ms (breathing {}) the Zs moved", if now % 3000 >= 1500 { "in" } else { "out" });
+        }
+    }
+
     #[test]
     fn a_long_block_turns_from_worried_to_cross() {
         let (mut p, room, t) = settled();
