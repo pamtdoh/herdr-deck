@@ -10,7 +10,7 @@
 //! with `PIXBAR_DUMP_DIR=<dir>` it also writes each frame as a colour PPM.
 //!
 //! `pixbar-sim --pet mint` starts with the dango in that colour (`mint`, `pink`, `peach`, `lemon`, `sky`, `lilac`).
-//! `pixbar-sim --showcase out.rgb` records what the README's GIF shows (`docs/gif.py` makes the GIF of it).
+//! `pixbar-sim --showcase out.rgb` records the README's GIF, a scene per feature (`docs/gif.py` makes the GIF).
 //! `pixbar-sim --reel mint out.rgb [tokens|name|cost|cards]` plays a scripted afternoon of the focused agent (working while its context grows and fills, blocked for long enough to
 //! get cross, done, compacted, idle, the focus moving away and back, working again) and writes every 40 ms frame to
 //! `out.rgb`, 52x16 RGB bytes each, for turning into a GIF.
@@ -19,16 +19,17 @@ use std::time::Instant;
 
 use minifb::{Key, KeyRepeat, Window, WindowOptions};
 use pixbar_render::{
-    Agent, Command, Effort, Frame, HostLink, Info, Input, Intent, Limit, Model, Pet, Power, Row, Show, Status, Style, Ui, World,
-    H, W,
+    Agent, Blocks, Command, Effort, Frame, HostLink, Info, Input, Intent, Limit, Model, Pet, Power, Row, Show, Status, Style, Ui,
+    World, H, W,
 };
 
 const CELL: usize = 16;
 /// Pretend round trip to herdr + Claude Code before a change shows up in the world state.
 const HOST_DELAY_MS: u64 = 400;
 
-fn demo_world() -> World {
-    let agent = |space: &str, tab: &str, status, model: &str, effort, used: u32, window: u32| Agent {
+/// A made-up agent: a space and tab in herdr, a status, a model and effort, and how full its context is.
+fn agent(space: &str, tab: &str, status: Status, model: &str, effort: Effort, used: u32, window: u32) -> Agent {
+    Agent {
         reported: true,
         // As with Claude Code's smallest model, which has no effort levels.
         has_effort: model != "haiku",
@@ -49,7 +50,10 @@ fn demo_world() -> World {
         cost_cents: used / 70,
         limit_5h: Some(Limit { used_pct: (used / 8_000).min(100) as u8, resets_in_min: 200 }),
         limit_7d: Some(Limit { used_pct: 29, resets_in_min: 4 * 24 * 60 + 300 }),
-    };
+    }
+}
+
+fn demo_world() -> World {
     World {
         agents: vec![
             agent("web", "2", Status::Working, "opus", Effort::XHigh, 104_000, 1_000_000),
@@ -367,66 +371,195 @@ fn reel(pet: Pet, out: &str, rows: Option<[Row; 2]>) {
     std::fs::write(out, bytes).expect("write reel");
 }
 
-/// What the README's GIF shows, as (from ms, what happens): an input, a change in the world, or nothing (it is
-/// only there so that the story reads top to bottom).
+/// Something that happens in a scene of the README's GIF.
+#[derive(Clone, Copy)]
 enum Beat {
     Press(Input),
-    /// The first agent's status and context.
-    First(Status, u32),
-    /// The focused agent's status.
-    Focused(Status),
+    /// An agent's status changes.
+    Status(usize, Status),
+    /// The resting rows and the strip's blocks change, as if picked in the settings.
+    Layout([Row; 2], Blocks),
 }
 
-const SHOWCASE: &[(u64, Beat)] = &[
-    // Resting on a working agent: the dango slides about beside the context, which grows.
-    (2_600, Beat::First(Status::Working, 118_000)),
-    // More effort, then ultracode, with its ripple.
-    (4_200, Beat::Press(Input::Right)),
-    (4_700, Beat::Press(Input::Right)),
-    // The other model: armed, then sent.
-    (8_200, Beat::Press(Input::Middle)),
-    (9_000, Beat::Press(Input::Middle)),
-    // The knob, to the agent that is blocked: the dango startles, then asks for you in red.
-    (11_000, Beat::Press(Input::KnobCw)),
-    (12_600, Beat::Press(Input::KnobPush)),
-    // The menu, turned twice and put away.
-    (15_400, Beat::Press(Input::KnobPush)),
-    (15_900, Beat::Press(Input::KnobCw)),
-    (17_100, Beat::Press(Input::KnobCw)),
-    (18_100, Beat::Press(Input::KnobPush)),
-    // The agent gets its answer and finishes: the dango lights up.
-    (19_000, Beat::Focused(Status::Done)),
-];
-const SHOWCASE_MS: u64 = 22_500;
+/// One feature, shown for `ms`: its tab and caption in the GIF, the agents it starts with, and what happens.
+struct Scene {
+    tab: &'static str,
+    caption: &'static str,
+    ms: u64,
+    pet: Pet,
+    world: fn() -> World,
+    beats: &'static [(u64, Beat)],
+    /// What changes by itself as the scene goes on: a context that climbs.
+    drift: fn(&mut World, u64),
+}
 
-/// The README's GIF: `--showcase out.rgb` writes every 40 ms frame of `SHOWCASE`, 52x16 RGB bytes each.
+/// An everyday afternoon: most agents idle, two at work.
+fn calm_world() -> World {
+    World {
+        agents: vec![
+            agent("web", "2", Status::Working, "opus", Effort::XHigh, 104_000, 1_000_000),
+            agent("api", "1", Status::Idle, "opus", Effort::High, 38_000, 1_000_000),
+            agent("docs", "1", Status::Idle, "fable", Effort::High, 12_000, 1_000_000),
+            agent("infra", "3", Status::Idle, "opus", Effort::Med, 220_000, 1_000_000),
+            agent("parser", "1", Status::Working, "fable", Effort::XHigh, 460_000, 1_000_000),
+            agent("design", "1", Status::Idle, "opus", Effort::High, 70_000, 1_000_000),
+        ],
+        focused: 0,
+    }
+}
+
+/// The same afternoon, the agent in front of you done with its turn (so the menu has everything to offer).
+fn calm_world_at_rest() -> World {
+    let mut w = calm_world();
+    w.agents[0].status = Status::Idle;
+    w
+}
+
+fn still(_: &mut World, _: u64) {}
+
+/// The first agent's context climbs while it works: 104K to about 210K over the first 4 s.
+fn climbing(w: &mut World, t: u64) {
+    if w.agents[0].status == Status::Working {
+        w.agents[0].ctx_used = 104_000 + (t.min(4_000) / 200) as u32 * 5_300;
+    }
+}
+
+const fn row(show: Show, style: Style) -> Row {
+    Row { show, style }
+}
+
+const DEFAULT_ROWS: [Row; 2] = [row(Show::Model, Style::Plain), row(Show::Context, Style::Plain)];
+const PET_ROWS: [Row; 2] = [row(Show::Model, Style::Plain), row(Show::Tokens, Style::Plain)];
+const CHUNKY: Blocks = Blocks { size: 4, gap: true };
+const TINY: Blocks = Blocks { size: 2, gap: false };
+
+/// The README's GIF: one scene per feature.
+const SCENES: &[Scene] = &[
+    Scene {
+        tab: "Agents",
+        caption: "Every agent at a glance. The knob switches between them.",
+        ms: 4_400,
+        pet: Pet::Off,
+        world: calm_world,
+        beats: &[
+            (900, Beat::Press(Input::KnobCw)),
+            (1_900, Beat::Press(Input::KnobCw)),
+            (2_900, Beat::Press(Input::KnobCw)),
+            (3_700, Beat::Press(Input::KnobPush)),
+        ],
+        drift: still,
+    },
+    Scene {
+        tab: "Live status",
+        caption: "Status, model, effort and context, live from Claude Code.",
+        ms: 5_200,
+        pet: Pet::Off,
+        world: calm_world,
+        beats: &[(1_800, Beat::Status(4, Status::Blocked)), (4_200, Beat::Status(0, Status::Done))],
+        drift: climbing,
+    },
+    Scene {
+        tab: "Effort & model",
+        caption: "Effort up and down, ultracode too. The middle button switches model.",
+        ms: 7_400,
+        pet: Pet::Off,
+        world: calm_world,
+        beats: &[
+            (500, Beat::Press(Input::Right)),
+            (1_000, Beat::Press(Input::Right)),
+            (4_000, Beat::Press(Input::Middle)),
+            (4_800, Beat::Press(Input::Middle)),
+        ],
+        drift: still,
+    },
+    Scene {
+        tab: "Quick actions",
+        caption: "Compact or clear, rename the tab, split, close: a push away.",
+        ms: 5_600,
+        pet: Pet::Off,
+        world: calm_world_at_rest,
+        beats: &[
+            (400, Beat::Press(Input::KnobPush)),
+            (1_200, Beat::Press(Input::Right)),
+            (1_900, Beat::Press(Input::KnobCw)),
+            (2_600, Beat::Press(Input::KnobCw)),
+            (3_200, Beat::Press(Input::Right)),
+            (3_800, Beat::Press(Input::KnobCw)),
+            (4_300, Beat::Press(Input::Middle)),
+            (5_300, Beat::Press(Input::KnobPush)),
+        ],
+        drift: still,
+    },
+    Scene {
+        tab: "Customize",
+        caption: "Rows, styles, block sizes and more, set on the panel itself.",
+        ms: 6_200,
+        pet: Pet::Off,
+        world: calm_world,
+        beats: &[
+            // The settings screen, to STYLE 1, where each press is previewed live.
+            (200, Beat::Press(Input::KnobLong)),
+            (400, Beat::Press(Input::KnobCw)),
+            (550, Beat::Press(Input::KnobCw)),
+            (700, Beat::Press(Input::KnobCw)),
+            (1_300, Beat::Press(Input::Right)),
+            (1_900, Beat::Press(Input::Right)),
+            (2_500, Beat::Press(Input::Right)),
+            (3_100, Beat::Press(Input::KnobPush)),
+            (4_100, Beat::Layout([row(Show::Limit5h, Style::Card), row(Show::Cost, Style::Plain)], CHUNKY)),
+            (5_100, Beat::Layout([row(Show::Name, Style::Plain), row(Show::Tokens, Style::Tint)], TINY)),
+        ],
+        drift: still,
+    },
+    Scene {
+        tab: "Pet",
+        caption: "Bonus: a dango that lives in the dark and acts out the agent.",
+        ms: 10_400,
+        pet: Pet::Mint,
+        world: calm_world,
+        beats: &[
+            (3_000, Beat::Status(0, Status::Blocked)),
+            (5_000, Beat::Status(0, Status::Done)),
+            (6_800, Beat::Status(0, Status::Idle)),
+        ],
+        drift: climbing,
+    },
+];
+
+/// The README's GIF: `--showcase out.rgb` writes every 40 ms frame of every scene, 52x16 RGB bytes each, and
+/// `out.rgb.scenes`: for each scene the frame it starts on, its tab and its caption, a line each, tab-separated.
 fn showcase(out: &str) {
-    let (mut world, mut ui, mut host, mut frame) = (demo_world(), Ui::new(), FakeHost::default(), Frame::new());
-    ui.info = demo_info();
-    ui.settings.pet = Pet::Mint;
-    ui.settings.rows[1] = Row { show: Show::Tokens, style: Style::Plain };
-    let mut bytes = Vec::new();
-    let mut beats = SHOWCASE.iter().peekable();
-    for t in (0..SHOWCASE_MS).step_by(40) {
-        while let Some((_, beat)) = beats.next_if(|(at, _)| *at <= t) {
-            match *beat {
-                Beat::Press(input) => {
-                    if let Some(intent) = ui.input(&world, input, t) {
-                        host.send(intent, t);
+    let (mut bytes, mut index, mut frames) = (Vec::new(), String::new(), 0);
+    for scene in SCENES {
+        let (mut world, mut ui, mut host, mut frame) = ((scene.world)(), Ui::new(), FakeHost::default(), Frame::new());
+        ui.info = demo_info();
+        (ui.settings.pet, ui.settings.rows) = (scene.pet, if scene.pet == Pet::Off { DEFAULT_ROWS } else { PET_ROWS });
+        index.push_str(&format!("{frames}\t{}\t{}\n", scene.tab, scene.caption));
+        let mut beats = scene.beats.iter().peekable();
+        for t in (0..scene.ms).step_by(40) {
+            while let Some(&(_, beat)) = beats.next_if(|(at, _)| *at <= t) {
+                match beat {
+                    Beat::Press(input) => {
+                        if let Some(intent) = ui.input(&world, input, t) {
+                            host.send(intent, t);
+                        }
                     }
+                    Beat::Status(agent, status) => world.agents[agent].status = status,
+                    Beat::Layout(rows, blocks) => (ui.settings.rows, ui.settings.blocks) = (rows, blocks),
                 }
-                Beat::First(status, used) => (world.agents[0].status, world.agents[0].ctx_used) = (status, used),
-                Beat::Focused(status) => world.agents[world.focused].status = status,
             }
+            (scene.drift)(&mut world, t);
+            host.step(&mut world, t);
+            if let Some(intent) = ui.tick(&world, t) {
+                host.send(intent, t);
+            }
+            ui.render(&world, t, &mut frame);
+            bytes.extend(frame.pixels().iter().flat_map(|p| [p.0, p.1, p.2]));
+            frames += 1;
         }
-        host.step(&mut world, t);
-        if let Some(intent) = ui.tick(&world, t) {
-            host.send(intent, t);
-        }
-        ui.render(&world, t, &mut frame);
-        bytes.extend(frame.pixels().iter().flat_map(|p| [p.0, p.1, p.2]));
     }
     std::fs::write(out, bytes).expect("write showcase");
+    std::fs::write(format!("{out}.scenes"), index).expect("write scenes");
 }
 
 fn main() {

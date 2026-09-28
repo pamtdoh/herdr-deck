@@ -307,8 +307,9 @@ effort buttons, space is the middle one, B cycles the focused agent's status, P 
 `--pet mint` starts it with the dango.
 
 Without a window: `--dump` prints a scripted session as text frames, `--reel mint out.rgb` records the dango
-through an afternoon of its agent, and `--showcase out.rgb` records what the README's GIF shows, which
-`python3 docs/gif.py out.rgb docs/pixbar.gif` (Pillow) turns into the GIF.
+through an afternoon of its agent, and `--showcase out.rgb` records the README's GIF, a scene per feature (their
+tabs and captions go to `out.rgb.scenes`), which `python3 docs/gif.py out.rgb docs/pixbar.gif` (Pillow 10.1 or
+later) turns into the GIF.
 
 ## Where things came from
 

@@ -3,7 +3,7 @@
 **A little control panel for your Claude Code agents, on a 52×16 LED gadget.**
 
 <p align="center">
-  <img src="docs/pixbar.gif" width="548" alt="pixbar on the panel: agents in the left strip; model, effort and context on the right; effort going up to ultracode, a switch to another model, the knob moving to a blocked agent, the menu, and the dango reacting">
+  <img src="docs/pixbar.gif" width="600" alt="pixbar's features on the panel, one after another: the agents in the left strip and the knob switching between them, status and context live from Claude Code, effort and model from the buttons, the quick-action menu, customizing the screen, and the dango">
 </p>
 
 pixbar turns an Ulanzi TC002 ("Pixbar": 52×16 LEDs, a knob, three buttons) into a companion for the Claude Code
