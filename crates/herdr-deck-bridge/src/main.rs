@@ -176,6 +176,7 @@ impl Bridge {
             agents.push(AgentState {
                 id,
                 agent: Agent {
+                    key: String::new(),
                     reported: info.is_some(),
                     has_effort: info.as_ref().is_some_and(|i| i.has_effort),
                     next_model,

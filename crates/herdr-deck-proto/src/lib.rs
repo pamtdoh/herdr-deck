@@ -133,6 +133,7 @@ mod tests {
             agents: vec![AgentState {
                 id: "w7:p1".into(),
                 agent: Agent {
+                    key: String::new(),
                     space: "web".into(),
                     tab: "2".into(),
                     reported: true,

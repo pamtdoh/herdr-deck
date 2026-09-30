@@ -110,10 +110,11 @@ const RAIL_X0: i32 = MAIN.x0 + 1;
 const RAIL_Y: i32 = 12;
 const ULTRA_DIVIDER_X: i32 = 43;
 
-/// Tells one agent from another across list changes: where it lives, not what it is doing (FNV-1a).
+/// Tells one agent from another across list changes: where it lives, not what it is doing (FNV-1a). Its pane
+/// where the device says which that is, else its space, tab and folder.
 fn who(a: &Agent) -> u64 {
-    [a.space.as_bytes(), &[0], a.tab.as_bytes(), &[0], a.dir.as_bytes()]
-        .concat()
+    let place = if a.key.is_empty() { [a.space.as_bytes(), &[0], a.tab.as_bytes(), &[0], a.dir.as_bytes()].concat() } else { a.key.as_bytes().to_vec() };
+    place
         .iter()
         .fold(0xcbf2_9ce4_8422_2325, |h, &b| (h ^ b as u64).wrapping_mul(0x0100_0000_01b3))
 }
@@ -319,7 +320,8 @@ pub struct Ui {
     /// can shift under it: a change meant for one session must not reach the one that slid into its place.
     overlay_who: u64,
     optimistic: Option<Optimistic>,
-    last_focused: usize,
+    /// `who` of the agent in focus: a list sorted by status moves it without the focus moving.
+    last_focused: Option<u64>,
     /// (since, until): the label takes line 2 after focus moved without the knob.
     name_flash: Option<(u64, u64)>,
     reject_at: Option<u64>,
@@ -350,7 +352,7 @@ impl Ui {
             overlay: Overlay::None,
             overlay_who: 0,
             optimistic: None,
-            last_focused: 0,
+            last_focused: None,
             name_flash: None,
             reject_at: None,
             knob_focus: None,
@@ -722,8 +724,11 @@ impl Ui {
     pub fn tick(&mut self, world: &World, now: u64) -> Option<Intent> {
         self.tick_power(now);
         self.drop_stale_overlay(world);
-        if world.focused != self.last_focused {
-            self.last_focused = world.focused;
+        let focused = world.agents.get(world.focused).map(who);
+        if focused != self.last_focused {
+            // The first agent heard of is where the panel starts, not a move.
+            let moved = self.last_focused.is_some() && focused.is_some();
+            self.last_focused = focused;
             // The knob's own focus change needs no announcement: the picker already shows the label.
             let ours = match self.overlay {
                 Overlay::Picker { hover, last_input, .. } => {
@@ -733,7 +738,7 @@ impl Ui {
                 Overlay::Menu(Menu { agent, .. }) => agent == world.focused,
                 _ => false,
             };
-            if !ours {
+            if moved && !ours {
                 // Focus moved from the keyboard: follow it, even out of a lingering picker. A menu closes too,
                 // rather than stay pointed at an agent nobody is looking at any more.
                 if matches!(self.overlay, Overlay::Picker { .. } | Overlay::Menu(_)) {

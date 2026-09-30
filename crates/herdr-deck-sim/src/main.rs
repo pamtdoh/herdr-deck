@@ -30,6 +30,7 @@ const HOST_DELAY_MS: u64 = 400;
 /// A made-up agent: a space and tab in herdr, a status, a model and effort, and how full its context is.
 fn agent(space: &str, tab: &str, status: Status, model: &str, effort: Effort, used: u32, window: u32) -> Agent {
     Agent {
+        key: String::new(),
         reported: true,
         // As with Claude Code's smallest model, which has no effort levels.
         has_effort: model != "haiku",

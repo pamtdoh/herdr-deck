@@ -6,7 +6,7 @@ use std::net::{TcpListener, TcpStream, UdpSocket};
 use std::time::{Duration, Instant};
 
 use herdr_deck_proto::{decode_to_device, encode, Action, AgentState, FromDevice, LineBuffer, ToDevice, BEACON_PORT, BEACON_PREFIX, PROTO};
-use herdr_deck_render::{HostLink, HostPick, World};
+use herdr_deck_render::{Agent, HostLink, HostPick, World};
 
 /// Hosts resend their state every couple of seconds; silence this long means the link is dead.
 const HOST_TIMEOUT: Duration = Duration::from_secs(10);
@@ -178,7 +178,7 @@ impl Hosts {
                     best = host.focus_stamp;
                     world.focused = world.agents.len();
                 }
-                world.agents.push(a.agent.clone());
+                world.agents.push(Agent { key: format!("{}\0{}", host.name, a.id), ..a.agent.clone() });
                 owners.push((h, a.id.clone()));
             }
         }

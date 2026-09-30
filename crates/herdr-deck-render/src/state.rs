@@ -142,6 +142,10 @@ impl Limit {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Agent {
+    /// Which pane on which machine this is, filled in by the device: two panes can share a tab and a folder.
+    /// Not on the wire; the host sends the pane id beside the agent. Empty where nobody filled it in.
+    #[serde(skip)]
+    pub key: String,
     /// herdr workspace label and tab label.
     pub space: String,
     pub tab: String,

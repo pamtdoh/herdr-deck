@@ -108,6 +108,7 @@ fn usb_device_mode() {
 
 fn demo_world() -> World {
     let agent = |space: &str, status, model: &str, effort, used| Agent {
+        key: String::new(),
         reported: true,
         has_effort: true,
         next_model: Some(Model::new(if model == "opus" { "fable" } else { "opus" })),

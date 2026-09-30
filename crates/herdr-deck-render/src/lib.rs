@@ -30,6 +30,7 @@ mod tests {
 
     fn world() -> World {
         let agent = |space: &str, status, model: Model, effort| Agent {
+            key: String::new(),
             reported: true,
             has_effort: true,
             next_model: Some(if model == opus() { fable() } else { opus() }),
@@ -220,7 +221,7 @@ mod tests {
     #[test]
     fn the_name_lingers_after_a_turn_and_the_panel_follows_a_focus_moved_from_the_keyboard() {
         let (mut w, mut ui) = (world(), Ui::new());
-        w.agents.push(w.agents[0].clone());
+        w.agents.push(Agent { key: "another pane".into(), ..w.agents[0].clone() });
         let mut f = Frame::new();
         let picker_up = |ui: &Ui, w: &World, t: u64, f: &mut Frame| {
             ui.render(w, t, f);
@@ -240,6 +241,34 @@ mod tests {
         w.focused = 2; // Tab in herdr, 5 s later
         ui.tick(&w, 25_000);
         assert!(!picker_up(&ui, &w, 25_000, &mut f), "the picker does not outlive a focus it did not ask for");
+    }
+
+    #[test]
+    fn a_list_sorted_by_status_does_not_look_like_a_focus_move() {
+        let (mut w, mut ui) = (world(), Ui::new());
+        ui.settings.name = NameOf::Space;
+        (w.agents[0].key, w.agents[1].key) = ("mac\0w1:p1".into(), "mac\0w1:p2".into());
+        let mut f = Frame::new();
+        // Line 2 shows the focused agent's name instead of its context.
+        let name_up = |ui: &Ui, w: &World, t: u64, f: &mut Frame| {
+            ui.render(w, t, f);
+            let mut expected = Frame::new();
+            crate::font::SMALL.draw(&mut expected, &w.agents[w.focused].label(NameOf::Space), 11, 9, crate::ui::palette::WHITE);
+            (9..16).all(|y| (11..52).all(|x| f.get(x, y) == expected.get(x, y)))
+        };
+        w.focused = 1;
+        ui.tick(&w, 0);
+        assert!(!name_up(&ui, &w, 0, &mut f), "where the panel starts is no move:\n{}", f.to_ascii());
+
+        // herdr's panel sorted by priority: the other agent starts working and goes above the focused one.
+        w.agents.swap(0, 1);
+        w.focused = 0;
+        ui.tick(&w, 5000);
+        assert!(!name_up(&ui, &w, 5000, &mut f), "same agent, new place in the list:\n{}", f.to_ascii());
+
+        w.focused = 1; // Tab in herdr
+        ui.tick(&w, 9000);
+        assert!(name_up(&ui, &w, 9000, &mut f), "a real move still shows the name:\n{}", f.to_ascii());
     }
 
     /// Where the carousel's middle icon sits, and a pixel that COMPACT's icon lights.
