@@ -816,15 +816,22 @@ impl Ui {
         }
     }
 
+    /// Focus moved without the knob: if no row carries the name, the bottom one gives way to it for a moment. Since when.
+    fn name_up(&self, now: u64) -> Option<u64> {
+        let named = self.settings.rows.iter().any(|r| r.show == Show::Name);
+        self.name_flash.filter(|&(_, until)| !named && now < until).map(|(since, _)| since)
+    }
+
     /// Whether the resting screen is what `render` shows: the one screen the pet lives on.
     fn resting(&self, world: &World, now: u64) -> bool {
         matches!(self.overlay, Overlay::None) && self.countdown_since.is_none() && !self.notice_up(now) && !world.agents.is_empty()
     }
 
     /// The pet moves through what the resting screen leaves dark, so it is shown that screen without itself.
-    /// Behind an overlay it waits where it was.
+    /// Behind an overlay, and while the name of an agent just focused goes by, it waits where it was: it turns to
+    /// the strip once the name is gone.
     fn tick_pet(&mut self, world: &World, now: u64) {
-        if self.settings.pet == Pet::Off || !self.resting(world, now) {
+        if self.settings.pet == Pet::Off || !self.resting(world, now) || self.name_up(now).is_some() {
             return;
         }
         let focused = world.focused.min(world.agents.len() - 1);
@@ -894,7 +901,7 @@ impl Ui {
             match self.overlay {
                 Overlay::None => {
                     self.draw_rest(world, focused, now, f);
-                    if self.settings.pet != Pet::Off {
+                    if self.settings.pet != Pet::Off && self.name_up(now).is_none() {
                         f.set_clip(PET_CLIP);
                         self.pet.draw(f, now, self.settings.pet.rgb());
                     }
@@ -953,10 +960,8 @@ impl Ui {
         let dx = self.reject_at.map_or(0, |t| bump_offset(now.saturating_sub(t), 1));
         let rows = self.settings.rows;
         self.draw_row(f, world, idx, rows[0], 0, dx, 0, now);
-        // Focus moved without the knob: if no row carries the name, the bottom one gives way to it for a moment.
-        let named = rows.iter().any(|r| r.show == Show::Name);
-        match self.name_flash.filter(|&(_, until)| !named && now < until) {
-            Some((since, _)) => {
+        match self.name_up(now) {
+            Some(since) => {
                 let label = world.agents[idx].label(self.settings.name);
                 draw_marquee(f, &label, MAIN.x0 + dx, LINE2_Y, MAIN_W, WHITE, now.saturating_sub(since));
             }

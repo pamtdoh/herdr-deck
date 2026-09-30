@@ -813,24 +813,47 @@ mod tests {
         }
     }
 
-    /// The pets may touch the text but never sit on it, and a balloon is whole or not there at all: nothing of
-    /// theirs is ever more than a pixel into what the text lights around it (a picture woven in between the
-    /// letters would be both broken and in the way).
+    /// The pet and its balloons go behind the text: they may be drawn in its gaps and over its space, but every
+    /// pixel the text lights stays exactly as the text lights it.
     #[test]
-    fn a_walking_pet_and_its_balloons_come_up_to_the_text_but_not_into_it() {
+    fn the_pet_and_its_balloons_go_behind_the_text() {
         for (pet, rows) in [Pet::Mint, Pet::Lemon].into_iter().flat_map(|p| LAYOUTS.map(|r| (p, r))) {
             with_and_without(pet, rows, |t, _, _, with, without| {
                 for (x, y) in (0..H as i32).flat_map(|y| (0..W as i32).map(move |x| (x, y))) {
-                    if with.get(x, y) == without.get(x, y) {
-                        continue;
+                    if without.get(x, y) != Rgb::OFF {
+                        assert_eq!(with.get(x, y), without.get(x, y), "{pet:?} drew over the text at ({x}, {y}), {t} ms:\n{}", with.to_ascii());
                     }
-                    // Lit on both sides, or above and below: in a gap inside the text.
-                    let lit = |dx: i32, dy: i32| without.get(x + dx, y + dy) != Rgb::OFF;
-                    let inside = lit(-1, 0) && lit(1, 0) || lit(0, -1) && lit(0, 1);
-                    assert!(!inside, "{pet:?} drew into the text at ({x}, {y}), {t} ms:\n{}", with.to_ascii());
                 }
             });
         }
+    }
+
+    /// While the name of an agent just focused goes by, the pet keeps out of it, and picks up after.
+    #[test]
+    fn the_pet_waits_out_the_name_of_an_agent_just_focused() {
+        let mut w = world();
+        (w.agents[0].key, w.agents[1].key) = ("a".into(), "b".into());
+        // Idle: it comes into view and sleeps there, where the name will go by.
+        w.agents[0].status = Status::Idle;
+        let (mut with, mut without) = (Ui::new(), Ui::new());
+        with.settings.pet = Pet::Mint;
+        let (mut a, mut b) = (Frame::new(), Frame::new());
+        let differs = |a: &Frame, b: &Frame| (0..H as i32).any(|y| (0..W as i32).any(|x| a.get(x, y) != b.get(x, y)));
+        let mut shown_after = false;
+        for t in (0..12_000).step_by(40) {
+            if t == 8000 {
+                w.focused = 1; // Tab in herdr
+            }
+            with.tick(&w, t);
+            without.tick(&w, t);
+            with.render(&w, t, &mut a);
+            without.render(&w, t, &mut b);
+            if (8000..10_000).contains(&t) {
+                assert!(!differs(&a, &b), "the pet over the name at {t} ms:\n{}", a.to_ascii());
+            }
+            shown_after |= t >= 10_000 && differs(&a, &b);
+        }
+        assert!(shown_after, "the pet never came back after the name");
     }
 
     #[test]

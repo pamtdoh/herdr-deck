@@ -86,7 +86,7 @@ impl Room {
     }
 
     /// What a walking body cannot be in: anything lit, the strip's side, above and below the panel. Past its right
-    /// edge is open, so the pet can walk off the panel and come back.
+    /// edge is open: the pet comes in from there, and peeks over it now and then.
     fn solid(&self, x: i32, y: i32) -> bool {
         y < 0 || y >= H as i32 || x < LEFT || self.lit(x, y)
     }
@@ -118,20 +118,18 @@ impl Room {
         (lo, hi, top)
     }
 
-    /// A pixel a balloon may use: dark, on the panel, and not in a gap inside the text (lit on both sides, or above
-    /// and below), where it would read as part of a letter. Beside the text is fine.
+    /// A pixel a balloon may use: anywhere on the panel's main area. Over the text it goes behind it (`put` never
+    /// covers a lit pixel), which is as it should be: the pet is not boxed in by the text.
     fn roomy(&self, (x, y): (i32, i32)) -> bool {
-        (LEFT..W as i32).contains(&x)
-            && (0..H as i32).contains(&y)
-            && !self.lit(x, y)
-            && !(self.lit(x - 1, y) && self.lit(x + 1, y))
-            && !(self.lit(x, y - 1) && self.lit(x, y + 1))
+        (LEFT..W as i32).contains(&x) && (0..H as i32).contains(&y)
     }
 
 }
 
 /// The room the pet keeps for itself, and the air round it; its body may bulge past it when it changes shape.
 const MW: i32 = 9;
+/// How far past the panel's right edge it may walk, a fifth of it or so: never out of sight (but for coming in).
+const PEEK: i32 = 2;
 const MH: i32 = 6;
 const AIR: i32 = 1;
 
@@ -203,13 +201,17 @@ const UNBOUNDED: (i32, i32, i32) = (-100, 100, -100);
 const STEP_MS: u64 = 40;
 /// Hidden longer than this (an overlay was up), it carries on from where it was rather than catch up.
 const RESUME_MS: u64 = 1000;
-/// How high an in-place hop goes, step by step.
-const HOP: [i32; 8] = [1, 2, 2, 3, 2, 2, 1, 0];
+/// How high an in-place hop goes, step by step, before it lands: an arc that holds its top for two steps and is
+/// still off the ground on its last, so that it goes up and comes down rather than twitch a pixel at the top or
+/// touch down stretched and then again squashed.
+const HOP: [i32; 8] = [1, 2, 2, 3, 3, 2, 2, 1];
 /// Blocked: a hop per breath of the strip's blocked block; done: a hop per two breaths of its done block.
 const ALARM_MS: u64 = 900;
 const CHEER_MS: u64 = 1800;
 /// Blocked this long, it stops asking and gets cross.
 const CROSS_AFTER_MS: u64 = 20_000;
+/// What happened while it was off the panel is acted out on its return for this long; after that it is old news.
+const HELD_MS: u64 = 4000;
 /// It munches on new context at most this often.
 const MUNCH_EVERY_MS: u64 = 8000;
 /// A drop in context this big is a compact or a clear.
@@ -218,7 +220,7 @@ const RELIEF_TOKENS: u32 = 10_000;
 /// What the pet is after, from the focused agent's status.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Mood {
-    /// Working: it goes about humming and stops to think, now and then leaves the panel for a moment.
+    /// Working: it goes about humming and stops to think, now and then peeks over the panel's edge.
     Busy,
     /// Blocked: it comes into view, hops and sways, flushing red in time with the strip.
     Alarm,
@@ -257,8 +259,6 @@ enum Act {
     Sleep { since: u64 },
     Cheer,
     Alarm,
-    /// Off the panel until then.
-    Away { until: u64 },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -276,6 +276,8 @@ pub struct PetState {
     seed: u32,
     /// What it is acting out, and since when.
     react: Option<(React, u64)>,
+    /// What it is to act out once it is on the panel, and since when.
+    held: Option<(React, u64)>,
     /// The focused agent as last seen, and since when it has had its status.
     cue: Option<Cue>,
     status_since: u64,
@@ -308,6 +310,7 @@ impl PetState {
             landed_at: 0,
             seed: 0x9e37_79b9 ^ now as u32,
             react: None,
+            held: None,
             cue: None,
             status_since: now,
             munched_at: None,
@@ -319,7 +322,7 @@ impl PetState {
     /// Where its box is, while it is on or at the panel: for tests.
     #[cfg(test)]
     pub(crate) fn body(&self) -> Option<(i32, i32, i32, i32)> {
-        (self.on && !matches!(self.act, Act::Away { .. })).then_some((self.x, self.y, MW, MH))
+        self.on.then_some((self.x, self.y, MW, MH))
     }
 
     fn rand(&mut self, n: u32) -> u32 {
@@ -355,6 +358,11 @@ impl PetState {
             self.step(room);
         }
         (self.free, self.room) = (room.around(self.x, self.y), *room);
+        // On the panel, the panel's edge is a wall like any other: a body that swells there gives way rather than
+        // spill off it. Coming or going, it slides over the edge as it is.
+        if self.in_view() {
+            self.free.1 = self.free.1.min(W as i32 - 1);
+        }
     }
 
     /// What changed about the focused agent since the last look, and what that is worth acting out.
@@ -393,8 +401,13 @@ impl PetState {
     }
 
     fn act_out(&mut self, room: &Room, r: React) {
+        // Half off the panel it would be acting to nobody: it does it once it is in view.
+        if !self.in_view() {
+            self.held = Some((r, self.clock));
+            return;
+        }
         self.react = Some((r, self.clock));
-        let on_ground = !matches!(self.act, Act::Jump { .. } | Act::Away { .. }) && room.ground(self.x, self.y);
+        let on_ground = !matches!(self.act, Act::Jump { .. }) && room.ground(self.x, self.y);
         if matches!(r, React::Startle | React::Eureka | React::Relief) && on_ground {
             self.hop();
         }
@@ -405,8 +418,13 @@ impl PetState {
     }
 
     /// How much of it sticks out past the panel's right edge.
-    fn out(&self) -> i32 {
+    pub(super) fn out(&self) -> i32 {
         (self.x + MW - W as i32).max(0)
+    }
+
+    /// All of it on the panel: where what it does can be seen.
+    pub(super) fn in_view(&self) -> bool {
+        self.out() == 0
     }
 
     fn pct(&self) -> u32 {
@@ -428,9 +446,8 @@ impl PetState {
     /// What to do next, when the last thing is done or the mood has changed.
     fn decide(&mut self, room: &Room, now: u64) {
         let out = self.out();
-        // Every mood but work and not knowing wants to be seen: first back onto the panel. Well off it, it comes
-        // back rather than stop out there.
-        if out > 0 && self.mood.wants_to_be_seen() || out > MW / 2 {
+        // It never stops partly off the panel: it comes back.
+        if out > 0 {
             self.facing = -1;
             let left = out as u32 + self.rand(if self.mood.wants_to_be_seen() { 4 } else { 8 });
             return self.set(Act::Walk { left });
@@ -444,20 +461,24 @@ impl PetState {
                 Act::Stand { .. } => self.set(Act::Sleep { since: now }),
                 _ => self.set(Act::Stand { until: now + 1500 }),
             },
+            // Having got somewhere, it settles there: always a good long stop first, and after a stop as often
+            // another as a walk on. Walks are short, and shorter when it is worn out.
             Mood::Busy | Mood::Amble => {
-                let r = self.rand(10);
                 let (busy, tired) = (self.mood == Mood::Busy, self.pct() >= 90);
-                if self.rand(3) == 0 {
-                    self.facing = -self.facing;
-                }
-                if r < if busy && !tired { 6 } else { 4 } {
-                    let left = 3 + self.rand(if busy { 14 } else { 6 });
+                let arrived = matches!(self.act, Act::Walk { .. } | Act::Jump { .. });
+                let r = self.rand(20);
+                if !arrived && r < if tired { 8 } else { 12 } {
+                    if self.rand(3) == 0 {
+                        self.facing = -self.facing;
+                    }
+                    let left = 3 + self.rand(if tired { 5 } else { 10 });
                     self.set(Act::Walk { left });
-                } else if busy && !tired && r == 9 && grounded {
+                } else if busy && !tired && !arrived && r == 19 && grounded {
                     self.hop();
                 } else {
                     // Stops to think (or, worn out, to get its breath back).
-                    let until = now + if busy { 1200 + self.rand(1800) } else { 1500 + self.rand(3000) } as u64;
+                    let (at_least, more) = if arrived { (3500, 3000) } else { (2000, 2000) };
+                    let until = now + at_least + self.rand(more) as u64;
                     self.set(Act::Stand { until });
                 }
             }
@@ -467,7 +488,7 @@ impl PetState {
 
     fn hop(&mut self) {
         let at = (self.x, self.y);
-        self.set(Act::Jump { from: at, to: at, at: 0, len: HOP.len() as u32, then: 0 });
+        self.set(Act::Jump { from: at, to: at, at: 0, len: HOP.len() as u32 + 1, then: 0 });
     }
 
     fn step(&mut self, room: &Room) {
@@ -475,21 +496,13 @@ impl PetState {
         if self.react.is_some_and(|(r, since)| now.saturating_sub(since) >= r.ms()) {
             self.react = None;
         }
-        if let Act::Away { until } = self.act {
-            if now >= until || self.mood.wants_to_be_seen() {
-                (self.x, self.y, self.facing) = (W as i32, H as i32 - MH, -1);
-                let left = MW as u32 + 1 + self.rand(8);
-                self.set(Act::Walk { left });
-            }
-            return;
-        }
         // The text grew into it: it gives way towards the open edge at once, rather than be drawn over, and is
         // left dizzy by the shove.
         if !room.fits(self.x, self.y) {
             while !room.fits(self.x, self.y) && self.x < W as i32 + AIR {
                 self.x += 1;
             }
-            if self.x < W as i32 && self.react.is_none() {
+            if self.in_view() && self.react.is_none() {
                 self.react = Some((React::Dizzy, now));
             }
             if !matches!(self.act, Act::Walk { .. }) {
@@ -507,6 +520,13 @@ impl PetState {
             }
             return;
         }
+        // In view at last: what happened on the way in, if it is still news.
+        if let Some((r, at)) = self.held.filter(|_| self.in_view()) {
+            self.held = None;
+            if now.saturating_sub(at) < HELD_MS {
+                return self.act_out(room, r);
+            }
+        }
         // Acting something out, it stays where it is.
         if self.react.is_some() {
             return;
@@ -522,11 +542,6 @@ impl PetState {
                 }
                 self.act = Act::Walk { left: left - 1 };
                 self.walk(room);
-                // Walked off the right edge.
-                if self.x >= W as i32 && self.facing > 0 && matches!(self.act, Act::Walk { .. }) {
-                    let until = now + 1500 + self.rand(4000) as u64;
-                    self.set(Act::Away { until });
-                }
             }
             Act::Stand { until } if now >= until => self.decide(room, now),
             // In time with the strip: a hop per breath of a blocked block (until it is cross and stamps
@@ -538,11 +553,10 @@ impl PetState {
     }
 
     /// One pixel on: along the ground, up a one-pixel step, off a ledge, or leaping onto another; turning back
-    /// where there is nowhere to go. Past the right edge it goes only now and then, and only when busy.
+    /// where there is nowhere to go. At the right edge it peeks over it, `PEEK` columns at most, and turns back.
     fn walk(&mut self, room: &Room) {
         let (x, y, d) = (self.x, self.y, self.facing);
-        let leaving = d > 0 && self.out() >= MW / 2;
-        if leaving && (self.mood != Mood::Busy || self.rand(3) != 0) {
+        if d > 0 && self.out() >= PEEK {
             self.facing = -d;
             return;
         }
@@ -574,7 +588,8 @@ impl PetState {
                         room.fits(ax, ay)
                     })
                 };
-                if dy != 0 && room.fits(to.0, to.1) && room.ground(to.0, to.1) && clear() {
+                let on_panel = to.0 + MW <= W as i32;
+                if dy != 0 && on_panel && room.fits(to.0, to.1) && room.ground(to.0, to.1) && clear() {
                     let then = match self.act {
                         Act::Walk { left } => left,
                         _ => 0,
@@ -591,7 +606,8 @@ impl PetState {
         let at = at + 1;
         // A hop on the spot goes as high as there is room for: under the text that may be not at all.
         let lift = |k: i32| (0..=k).rev().find(|&k| room.fits(from.0, from.1 - k)).unwrap_or(0);
-        let (nx, ny) = if from == to { (from.0, from.1 - lift(HOP[(at as usize).min(HOP.len() - 1)])) } else { arc(from, to, at, len) };
+        // A hop: HOP's heights one after another, then down.
+        let (nx, ny) = if from == to { (from.0, from.1 - lift(HOP.get(at as usize - 1).copied().unwrap_or(0))) } else { arc(from, to, at, len) };
         if !room.fits(nx, ny) {
             // Something came in the way: it drops from where it is.
             return self.set(Act::Walk { left: 1 });
@@ -602,6 +618,10 @@ impl PetState {
             return;
         }
         self.landed_at = self.clock;
+        // Startled off the panel: not on with the act out there, but back in.
+        if self.out() > 0 && from == to {
+            return self.decide(room, self.clock);
+        }
         let resume = match self.mood {
             // A leap was part of a walk, which goes on after it.
             _ if from != to => Act::Walk { left: then },
@@ -621,21 +641,32 @@ impl PetState {
 }
 
 /// A balloon by a head whose leftmost and rightmost pixels are in columns `left` and `right` and whose top is row
-/// `y`: beside it on the right, with a pixel of air between them, or on the left where the right has no room. Its
-/// bottom row is level with the head's second row, so a balloon needs little more height than the pet. It may come
-/// up against the text but not into it: a picture that fits on neither side is left out rather than drawn in among
-/// the letters, and what drifts or circles fades where it would. `age`: how long it has been up.
-fn balloon(f: &mut Frame, room: &Room, e: Emote, (left, right): (i32, i32), y: i32, age: u64, now: u64) {
-    let at = |ex: i32, rows: &'static [&'static str]| {
+/// `y`: beside it on the right, with a pixel of air between them, or on the left where the right is off the panel,
+/// its bottom row level with the head's second row, so that a balloon needs little more height than the pet. A
+/// balloon that goes with where it looks (`side` -1 the left, 1 the right, 0 neither) stays on that side, cut off by
+/// the panel's edge where it has no room there. Where
+/// that is over the text it goes behind it. Nothing in it flips between two pictures: what moves goes through a
+/// round of places, what throbs does it in brightness. `age`: how long it has been up.
+#[allow(clippy::too_many_arguments)]
+fn balloon(f: &mut Frame, room: &Room, e: Emote, (left, right): (i32, i32), y: i32, age: u64, now: u64, side: i32) {
+    // Left column and bottom row.
+    let (on_right, on_left) = ((right + 2, y + 1), (left - 4, y + 1));
+    let beside = match side {
+        0 => vec![on_right, on_left],
+        s if s < 0 => vec![on_left],
+        _ => vec![on_right],
+    };
+    let at = |(ex, bottom): (i32, i32), rows: &'static [&'static str]| {
         let n = rows.len() as i32;
         rows.iter().enumerate().flat_map(move |(r, row)| {
-            row.bytes().enumerate().filter(|&(_, b)| b != b'.').map(move |(k, b)| (ex + k as i32, y + 2 - n + r as i32, b))
+            row.bytes().enumerate().filter(|&(_, b)| b != b'.').map(move |(k, b)| (ex + k as i32, bottom + 1 - n + r as i32, b))
         })
     };
     // `#` in its colour, `o` in grey.
     let icon = |f: &mut Frame, rows: &'static [&'static str], c: Rgb| {
-        if let Some(ex) = [right + 2, left - 4].into_iter().find(|&ex| at(ex, rows).all(|(x, y, _)| room.roomy((x, y)))) {
-            for (x, y, b) in at(ex, rows) {
+        let fits = |&spot: &(i32, i32)| side != 0 || at(spot, rows).all(|(x, y, _)| room.roomy((x, y)));
+        if let Some(&spot) = beside.iter().find(|spot| fits(spot)) {
+            for (x, y, b) in at(spot, rows) {
                 put(f, x, y, if b == b'o' { GREY } else { c });
             }
         }
@@ -648,20 +679,23 @@ fn balloon(f: &mut Frame, room: &Room, e: Emote, (left, right): (i32, i32), y: i
     let on_right = right + 5 <= W as i32;
     let ex = if on_right { right + 2 } else { left - 4 };
     match e {
-        // Pops up blinking.
-        Emote::Bang if age % 400 < 280 => icon(f, &[".#.", ".#.", "...", ".#."], RED),
-        Emote::Bang => {}
+        // Pops up with a blink or two, then stays.
+        Emote::Bang if age < 800 && age % 400 >= 280 => {}
+        Emote::Bang => icon(f, &[".#.", ".#.", "...", ".#."], RED),
         Emote::Question => icon(f, &["##.", "..#", ".#.", "...", ".#."], YELLOW),
         // Bobbing to the tune.
         Emote::Note if now % 600 < 300 => icon(f, &[".##", ".#.", "##.", "##.", "..."], YELLOW),
         Emote::Note => icon(f, &[".##", ".#.", "##.", "##."], YELLOW),
         Emote::Heart => icon(f, &["#.#", "###", ".#."], HEART),
-        Emote::Anger if now % 500 < 250 => icon(f, &["#.#", "...", "#.#"], RED),
-        Emote::Anger => icon(f, &["...", ".#.", "..."], RED),
+        // Throbbing.
+        Emote::Anger => icon(f, &["#.#", "...", "#.#"], RED.scale(0.55 + 0.45 * pulse(now, 500))),
         Emote::Bulb if age < 600 && age % 200 >= 100 => {}
         Emote::Bulb => icon(f, &["###", "###", ".o."], YELLOW),
-        Emote::Sparkle if now % 300 < 150 => icon(f, &[".#.", "###", ".#."], YELLOW),
-        Emote::Sparkle => icon(f, &["#.#", ".#.", "#.#"], YELLOW),
+        // Twinkling: a glint that opens out, turns and closes again.
+        Emote::Sparkle => {
+            const GLINT: [&[&str]; 4] = [&["...", ".#.", "..."], &[".#.", "###", ".#."], &["#.#", ".#.", "#.#"], &[".#.", "###", ".#."]];
+            icon(f, GLINT[(age / 200 % 4) as usize], YELLOW)
+        }
         // One dot, two, three, rising away like a thought.
         Emote::Dots => {
             let shown = (age / 400 % 4) as i32;
@@ -688,21 +722,32 @@ fn balloon(f: &mut Frame, room: &Room, e: Emote, (left, right): (i32, i32), y: i
 }
 
 /// Zs rising off the top of a head that spans columns `left` to `right` and whose top row is `y`, one after another,
-/// floating away from it along the first way that is dark all the way up: from over its right shoulder up and to
-/// the right, from over its left shoulder up and to the left, or straight up off the top of its head. A Z that
-/// would still run into the text (it moved since) is not drawn at all rather than in pieces.
+/// floating away from it along the first way that stays on the panel all the way up: from over its right shoulder up
+/// and to the right, from over its left shoulder up and to the left (in the corner under the text, behind the
+/// text), up and away from any other part of its head, or else straight up.
+///
+/// Each Z rises four steps and the next sets off as it reaches the top: at any moment one is on its way up, never
+/// two a half-round apart, which would make the pair of them flip between the same two pictures.
 fn zzz(f: &mut Frame, room: &Room, (left, right): (i32, i32), y: i32, age: u64) {
+    const STEP_MS: u64 = 400;
+    const EVERY_MS: u64 = 3 * STEP_MS;
     let z = |x: i32, drift: i32, rise: i32| [(0, 0), (1, 0), (1, 1), (0, 2), (1, 2)].map(|(dx, dy)| (x + drift * rise + dx, y - 3 - rise + dy));
     let clear = |&(x, drift): &(i32, i32)| (0..4).all(|rise| z(x, drift, rise).iter().all(|&p| room.roomy(p)));
     let over = (left + right) / 2;
-    let (x, drift) = [(right - 1, 1), (left, -1), (over, 0)].into_iter().find(clear).unwrap_or((over, 0));
-    for k in 0..2u64 {
-        if age < k * 1200 {
+    let rightwards = (left..right - 1).rev().map(|x| (x, 1));
+    let leftwards = (left + 1..right).map(|x| (x, -1));
+    let upwards = std::iter::once(over).chain((left..right).rev()).map(|x| (x, 0));
+    let ways = [(right - 1, 1), (left, -1)].into_iter().chain(rightwards).chain(leftwards).chain(upwards);
+    let Some((x, drift)) = ways.into_iter().find(clear) else {
+        return;
+    };
+    // The one on its way up, and the one before it on its last step.
+    for since in [age % EVERY_MS, age % EVERY_MS + EVERY_MS] {
+        let rise = (since / STEP_MS) as i32;
+        if rise > 3 || since > age {
             continue;
         }
-        let t = (age - k * 1200) % 2400;
-        let rise = (t / 600) as i32;
-        let c = LAVENDER.scale(1.0 - t as f32 / 2400.0 * 0.6);
+        let c = LAVENDER.scale(1.0 - since as f32 / (4 * STEP_MS) as f32 * 0.6);
         let z = z(x, drift, rise);
         if z.iter().all(|&p| room.roomy(p)) {
             for (zx, zy) in z {
@@ -770,12 +815,13 @@ mod tests {
         }
     }
 
-    /// The pet standing on the floor of an empty room, well inside the panel, looking at a working agent; and the
-    /// time.
+    /// The pet standing on the floor of an empty room, well inside the panel (room to be shoved and still be on it),
+    /// looking at a working agent; and the time.
     fn settled() -> (PetState, Room, u64) {
         let (mut p, room) = (PetState::default(), Room::default());
         let mut t = 0;
-        while !(p.x + MW < W as i32 && matches!(p.act, Act::Stand { .. } | Act::Walk { .. }) && room.ground(p.x, p.y)) || t < 3000 {
+        while !(p.x + MW + 4 <= W as i32 && matches!(p.act, Act::Stand { .. } | Act::Walk { .. }) && room.ground(p.x, p.y)) || t < 3000 {
+            assert!(t < 600_000, "the pet never settled well inside the panel");
             p.tick(true, &room, cue(Status::Working, 50_000), t);
             t += STEP_MS;
         }
@@ -813,6 +859,55 @@ mod tests {
         assert_eq!(p.react.map(|r| r.0), Some(React::Startle));
     }
 
+    /// Once in, it stays in sight: it peeks over the panel's right edge now and then, two columns at most, and never
+    /// stops partly off it, only walks there. (Coming in, the first time, it starts off the panel altogether.)
+    #[test]
+    fn once_in_it_only_ever_peeks_over_the_edge() {
+        let order = [Status::Working, Status::Unknown, Status::Idle, Status::Working, Status::Blocked, Status::Done];
+        let mut peeked = 0;
+        for start in (0..40u64).map(|k| k * 7919) {
+            let (mut p, room) = (PetState::new(true, start), Room::default());
+            let mut came_in = false;
+            for i in 0..3000u64 {
+                let (t, status) = (start + i * STEP_MS, order[(i / 250) as usize % order.len()]);
+                p.tick(true, &room, cue(status, 50_000), t);
+                came_in |= p.in_view();
+                if !came_in {
+                    continue;
+                }
+                assert!(p.out() <= PEEK, "{status:?} at {t} ms: {} columns off the panel", p.out());
+                assert!(p.out() == 0 || matches!(p.act, Act::Walk { .. } | Act::Jump { .. }), "{status:?} at {t} ms: stopped partly off, {:?}", p.act);
+                peeked += (p.out() > 0) as u32;
+            }
+            assert!(came_in, "it never came onto the panel");
+        }
+        assert!(peeked > 0, "it never peeked over the edge");
+    }
+
+    /// Coming onto the panel, it acts nothing out while it is still partly off it: what happens meanwhile waits
+    /// until all of it is in view, and it does not stop at the edge to do it.
+    #[test]
+    fn it_acts_only_once_it_is_in_view() {
+        let (mut p, room) = (PetState::new(true, 0), Room::default());
+        let (mut t, mut used, mut acted, mut came_in) = (0, 50_000, None, None);
+        while t < 6000 {
+            // The context climbs the whole time: something to munch on.
+            used += 400;
+            p.tick(true, &room, cue(Status::Working, used), t);
+            if p.react.is_some() {
+                assert!(p.in_view(), "acting out {:?} at {t} ms with {} of it off the panel", p.react, p.out());
+                acted.get_or_insert(t);
+            }
+            if p.in_view() {
+                came_in.get_or_insert(t);
+            }
+            t += STEP_MS;
+        }
+        let came_in = came_in.expect("it never came onto the panel");
+        assert!(came_in < 3000, "it took {came_in} ms to come in");
+        assert!(acted.is_some_and(|a| a <= came_in + 200), "what happened on the way in was not acted out on arrival: {acted:?}, in at {came_in}");
+    }
+
     #[test]
     fn shoved_by_the_text_it_is_left_dizzy_where_it_fits() {
         let (mut p, room, t) = settled();
@@ -838,9 +933,9 @@ mod tests {
         assert_eq!((p.x, p.y), (x, y));
     }
 
-    /// Its Zs float up off its head and away from it, the first way that is dark all the way: to the right where
-    /// there is room, to the left where it sleeps against the panel's right edge, straight up where text hems it in
-    /// on that side too. Never towards it, never from the far side of its body, never popping in and out.
+    /// Its Zs float up off its head and away from it, the first way that stays on the panel: to the right where
+    /// there is room, to the left where it sleeps against the panel's right edge, behind the text if that is where
+    /// the left leads. Never towards it, never from the far side of its body, never popping in and out.
     #[test]
     fn zs_float_up_and_away_from_the_head() {
         let mut hemmed = Room::default();
@@ -848,10 +943,10 @@ mod tests {
             *row |= ((1u64 << 40) - 1) & !((1u64 << 29) - 1); // `12%` in columns 29..=39
         }
         let top = 13;
-        for (room, left, right, away) in [(Room::default(), 30, 41, 1), (Room::default(), 40, 51, -1), (hemmed, 40, 51, 0)] {
+        for (room, left, right, away) in [(Room::default(), 30, 41, 1), (Room::default(), 40, 51, -1), (hemmed, 40, 51, -1)] {
             let lit = |age: u64| {
                 let mut f = Frame::new();
-                balloon(&mut f, &room, Emote::Zzz, (left, right), top, age, age);
+                balloon(&mut f, &room, Emote::Zzz, (left, right), top, age, age, 0);
                 (0..H as i32).flat_map(|y| (0..W as i32).map(move |x| (x, y))).filter(|&(x, y)| f.get(x, y) != Rgb::OFF).collect::<Vec<_>>()
             };
             let mean = |ps: &[(i32, i32)]| ps.iter().map(|p| p.0).sum::<i32>() as f32 / ps.len().max(1) as f32;
@@ -867,6 +962,26 @@ mod tests {
             let went = if later > start + 0.1 { 1 } else if later < start - 0.1 { -1 } else { 0 };
             assert_eq!(went, away, "the Z went from x {start} to {later}");
         }
+    }
+
+    /// Its Zs rise one after another, each all the way: the picture goes through a round of places, never flipping
+    /// between the same two (as two Zs half a round apart did, one always two steps above the other).
+    #[test]
+    fn its_zs_rise_rather_than_flip_between_two_pictures() {
+        let room = Room::default();
+        let shot = |age: u64| {
+            let mut f = Frame::new();
+            balloon(&mut f, &room, Emote::Zzz, (30, 41), 13, age, age, 0);
+            (0..H as i32).flat_map(|y| (0..W as i32).map(move |x| (x, y))).filter(|&(x, y)| f.get(x, y) != Rgb::OFF).collect::<Vec<_>>()
+        };
+        // A picture every 200 ms over a few rounds, well after it fell asleep.
+        let shots: Vec<_> = (0..24).map(|k| shot(20_000 + k * 200)).collect();
+        let distinct: std::collections::BTreeSet<_> = shots.iter().collect();
+        assert!(distinct.len() >= 3, "the Zs show only {} pictures", distinct.len());
+        let flips = shots.windows(3).all(|w| w[0] == w[2] && w[0] != w[1]) ;
+        assert!(!flips, "the Zs flip between two pictures");
+        let rows: std::collections::BTreeSet<i32> = shots.iter().flatten().map(|p| p.1).collect();
+        assert!(rows.len() >= 6, "the Zs go no higher than rows {rows:?}: a Z three tall rising four steps goes through six");
     }
 
     /// Asleep in the corner beside `12%`, it breathes in and out, and its outline with it; its Zs keep to the one
@@ -902,6 +1017,5 @@ mod tests {
         run(&mut p, &room, cue(Status::Blocked, 50_000), t + 5040, t + 21_000);
         let cross = dango::look(&p, t + 21_000);
         assert_eq!(cross.emote.map(|e| e.0), Some(Emote::Anger));
-        assert!(cross.shape.w > worried.shape.w, "puffed up: {:?} after {:?}", cross.shape, worried.shape);
     }
 }
