@@ -36,14 +36,9 @@ const STRIDE: [Shape; 4] = [shape(9, 6, 0.5), shape(10, 6, 1.0), shape(11, 5, 1.
 const BASE: f32 = 0.3;
 /// Asleep, melted flat: breathing out, breathing in.
 const SLEEP: [Shape; 2] = [shape(12, 3, 0.0), shape(11, 4, 0.0)];
-/// Worn out: sagging, heaving fast.
+/// Worn out: sagging, heaving fast: out, in.
 const SAG: [Shape; 2] = [shape(12, 4, 0.0), shape(11, 5, 0.0)];
 const HEAVE_MS: u64 = 1200;
-
-/// How far into a breath of `period` it is `t` in: 0 (out) to 1 (in) and back, smoothly.
-fn breath(t: u64, period: u64) -> f32 {
-    1.0 - pulse(t, period)
-}
 /// Coming down from a hop: squashed a while, then round again. An odd width, so that it lands where it was rather than
 /// half a pixel to one side.
 const LANDING: [(u64, Shape); 1] = [(240, shape(11, 5, 0.0))];
@@ -91,9 +86,6 @@ pub(super) struct Look {
     /// Where its eyes turn: -1, 0 or 1 across (left to right) and up (-1) or down.
     gaze: (i32, i32),
     pub(super) emote: Option<(Emote, u64)>,
-    /// Breathing: swelling this far (0 to 1) into another shape, the pixels where the two differ fading, its eyes
-    /// where `shape` has them.
-    breath: Option<(Shape, f32)>,
     /// The steady pose its eyes are placed on, where the body only passes through `shape` (a sway, a hop, a stride):
     /// the eyes have some weight and stay put while the body moves round them, rather than follow every step.
     eyes_as: Option<Shape>,
@@ -105,7 +97,7 @@ pub(super) struct Look {
 
 impl Look {
     fn new(shape: Shape, eyes: Eyes) -> Look {
-        Look { shape, eyes, gaze: (0, 0), emote: None, breath: None, eyes_as: None, apart: 1, side: 0 }
+        Look { shape, eyes, gaze: (0, 0), emote: None, eyes_as: None, apart: 1, side: 0 }
     }
 
     fn apart(self, apart: i32) -> Look {
@@ -119,10 +111,6 @@ impl Look {
 
     fn eyes_as(self, pose: Shape) -> Look {
         Look { eyes_as: Some(pose), ..self }
-    }
-
-    fn breathing(self, into: Shape, k: f32) -> Look {
-        Look { breath: Some((into, k)), ..self }
     }
 
     fn gazing(self, gaze: (i32, i32)) -> Look {
@@ -245,7 +233,7 @@ fn pose_of(p: &PetState, now: u64, pose: &std::cell::Cell<Option<Shape>>) -> Loo
             let pct = p.pct();
             let mut l = match () {
                 // Worn out: sagging and heaving, eyes shut.
-                _ if pct >= 90 && still => Look::new(SAG[0], Eyes::Shut).breathing(SAG[1], breath(now, HEAVE_MS)),
+                _ if pct >= 90 && still => Look::new(SAG[(now % HEAVE_MS >= HEAVE_MS / 2) as usize], Eyes::Shut).eyes_as(SAG[0]),
                 _ if pct >= 90 => Look::new(body(SAG[1]), Eyes::Shut),
                 _ if walking => Look::new(body(REST), Eyes::Open).gazing((p.facing, 0)),
                 // Stopped to think: eyes up, drifting from one side to the other.
@@ -345,28 +333,14 @@ fn paint(f: &mut Frame, x: i32, ground: i32, facing: i32, free: (i32, i32, i32),
     for (slot, (mx, my, _)) in holes.iter_mut().zip(marks(eyes, gaze, ey + drop)) {
         *slot = (mx, my);
     }
-    let into = l.breath.map(|(b, k)| (fit(b), k));
     let (mut lo, mut hi) = (i32::MAX, i32::MIN);
-    for y in into.map_or(top, |((b, _), _)| top.min(ground - b.h + 1))..=ground {
+    for y in top..=ground {
         for px in x - 3..x + MW + 3 {
-            let here = s.covers(cx, ground, px, y);
-            if here {
+            if s.covers(cx, ground, px, y) {
                 (lo, hi) = (lo.min(px), hi.max(px));
-            }
-            let level = match into {
-                _ if holes.contains(&(px, y)) => 0.0,
-                None => here as u8 as f32,
-                Some(((b, bx), k)) => match (here, b.covers(bx, ground, px, y)) {
-                    (true, true) => 1.0,
-                    (true, false) => 1.0 - k,
-                    (false, true) => k,
-                    (false, false) => 0.0,
-                },
-            };
-            if level >= 1.0 {
-                put(f, px, y, color);
-            } else if level > 0.02 {
-                put(f, px, y, color.scale(level));
+                if !holes.contains(&(px, y)) {
+                    put(f, px, y, color);
+                }
             }
         }
     }
@@ -402,7 +376,7 @@ pub(super) fn preview(f: &mut Frame, x: i32, bottom: i32, now: u64, own: Rgb) {
         1 => Look::new(REST, Eyes::Open).gazing(wander(now, 500, &PONDER)).with(Emote::Dots, t),
         2 => Look::new(if beat(160) { PUFF } else { REST }, Eyes::Shut),
         3 => Look::new(REST, Eyes::Open).with(Emote::Sweat, t),
-        4 => Look::new(SAG[0], Eyes::Shut).breathing(SAG[1], breath(now, HEAVE_MS)),
+        4 => Look::new(SAG[(now % HEAVE_MS >= HEAVE_MS / 2) as usize], Eyes::Shut).eyes_as(SAG[0]),
         5 => Look::new(TALL, Eyes::Open).with(Emote::Bang, t),
         6 => Look::new(shape(9, 6, 1.2 * worried_glance(now * 4).0 as f32), Eyes::Open).eyes_as(REST).gazing(worried_glance(now * 4)).toward(worried_side(now * 4)).with(Emote::Bang, t),
         7 => Look::new(if beat(250) { shape(11, 5, 0.0) } else { shape(11, 6, 0.0) }, Eyes::Open).with(Emote::Anger, t),
