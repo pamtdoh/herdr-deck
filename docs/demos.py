@@ -112,6 +112,9 @@ def panel(frame):
             i = (y * W + x) * 3
             c = tuple(frame[i:i + 3])
             x0, y0 = PAD + x * LED, PAD + y * LED
+            # A LED lit fainter than the face (a pixel fading in or out) is its light on the face, not a dark hole.
+            if c != (0, 0, 0) and all(a <= b for a, b in zip(c, UNLIT)):
+                c = tuple(min(255, a + b) for a, b in zip(c, UNLIT))
             d.ellipse([x0 + 1, y0 + 1, x0 + LED - 2, y0 + LED - 2], fill=UNLIT if c == (0, 0, 0) else c)
     return img
 
